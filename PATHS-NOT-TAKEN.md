@@ -156,7 +156,9 @@ what hides there / re-entry notes**. Research references point into
 - **Re-entry:** Start with DVN (simplest, JAES 2023 numbers strong, no
   patent flag surfaced); fit T60(f) from the loaded IR automatically;
   splice at ~80 ms with energy matching; A/B against pure convolution on
-  the same IR.
+  the same IR. (2026-07-22: user reviewed and deferred — "hit the other
+  three first [XY blend, damp, drive], then we'll revisit." Wants to
+  avoid algorithmic-reverb pitfalls; the lab A/B gate is the answer.)
 
 ## 11. Reusing LGPL reference code verbatim
 

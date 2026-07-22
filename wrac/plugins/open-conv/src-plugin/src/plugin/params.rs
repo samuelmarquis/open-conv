@@ -145,7 +145,7 @@ const PARAM_SPECS: &[ParameterSpec] = &[
     choice(PARAM_BYPASS_ID, "Bypass", "", OFF_ON, 0.0, true),
     continuous(PARAM_WET_ID, "Wet", "mix", 0.0, 1.0, 0.35, Format::Percent),
     continuous(PARAM_DRY_ID, "Dry", "mix", 0.0, 1.0, 1.0, Format::Percent),
-    continuous(PARAM_SAT_ID, "Wet Sat", "mix", 0.0, 4.0, 1.0, Format::Ratio),
+    continuous(PARAM_SAT_ID, "Wet Sat", "mix", 0.0, 4.0, 0.0, Format::Ratio),
     continuous(PARAM_SYM_ID, "Symmetry", "selector", 0.0, 1.0, 0.0, Format::Percent),
     continuous(PARAM_SIZE_ID, "Size", "ir", 0.25, 4.0, 1.0, Format::Ratio),
     choice(PARAM_MODE_ID, "Selector", "selector", &["Instant", "Envelope"], 1.0, false),

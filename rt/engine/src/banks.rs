@@ -62,7 +62,7 @@ impl Rng {
 /// actually excites; the engine's wet tanh absorbs the residual
 /// long-coherence headroom musically.
 pub fn windowed_spectral_norm(h: &mut [f32], sr: f64) {
-    let target = 10.0f32.powf(12.0 / 20.0); // +12 dB burst gain
+    let target = 10.0f32.powf(6.0 / 20.0); // +6 dB burst gain (was +12; "prefer it clean" verdict)
     let w = (((0.085 * sr) as usize).next_power_of_two()).min(h.len().next_power_of_two());
     let n = 2 * w;
     let mut planner = realfft::RealFftPlanner::<f32>::new();

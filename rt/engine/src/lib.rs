@@ -100,9 +100,9 @@ pub struct EngineParams {
     /// IR stretch ratio (resampling, pitch-coupled — the classic "size").
     /// Changes are honored by [`Engine::service`] via partition streaming.
     pub size: f64,
-    /// Wet soft-saturation drive (tanh(w·d)/d). 0 = off/linear; 1 =
-    /// gentle safety (≈ transparent below −12 dBFS). Resonant IR banks
-    /// lean on this to absorb coherent low-end buildup musically.
+    /// Wet soft-saturation drive (tanh(w·d)/d). 0 (default) = fully
+    /// linear — float headroom carries hot wet cleanly; trim Wet instead.
+    /// >0 = deliberate saturation color (1 ≈ transparent below −12 dBFS).
     pub sat: f64,
     /// Symmetry, 0..1: on negative half-cycles the zone ladder is blended
     /// toward its mirror (zone z ↔ n_zones−1−z). 0 = off; 1 = full
@@ -143,7 +143,7 @@ impl Default for EngineParams {
             wet: 0.35,
             dry: 1.0,
             size: 1.0,
-            sat: 1.0,
+            sat: 0.0,
             sym: 0.0,
             morph: 1.0,
             fade_frames: 4.0,

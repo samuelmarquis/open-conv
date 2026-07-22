@@ -13,11 +13,12 @@ use open_conv_engine::{EngineParams, LevelMode, MAX_ZONES, TailMode};
 
 use crate::plugin::{
     PARAM_ATTACK_ID, PARAM_BANK_ID, PARAM_BYPASS_ID, PARAM_DRY_ID, PARAM_FADE_ID, PARAM_MODE_ID,
-    PARAM_MORPH_ID, PARAM_RELEASE_ID, PARAM_RELOAD_ID, PARAM_SAT_ID, PARAM_SIZE_ID, PARAM_SYM_ID, PARAM_TAILS_ID,
+    PARAM_MORPH_ID, PARAM_RELEASE_ID, PARAM_RELOAD_ID, PARAM_SIZE_ID, PARAM_SYM_ID, PARAM_TAILS_ID,
     PARAM_WET_ID, PARAM_ZONES_ID, PARAM_ZONE_GAIN_IDS, PARAM_ZONE_LEVEL_IDS, param_clamp,
     param_default, param_exists,
 };
 
+// Indexed by param id; id 3 (Wet Sat) is retired/dead — max live id is 22.
 pub(crate) const PARAM_SLOTS: usize = 23;
 
 pub(crate) struct SharedState {
@@ -92,7 +93,6 @@ impl SharedState {
             wet: self.v(PARAM_WET_ID) as f64,
             dry: self.v(PARAM_DRY_ID) as f64,
             size: self.v(PARAM_SIZE_ID) as f64,
-            sat: self.v(PARAM_SAT_ID) as f64,
             sym: self.v(PARAM_SYM_ID) as f64,
             morph: self.v(PARAM_MORPH_ID) as f64,
             fade_frames: self.v(PARAM_FADE_ID) as f64,

@@ -26,7 +26,6 @@
 //!   --attack MS            envelope attack [5]
 //!   --release MS           envelope release [120]
 //!   --wet F --dry F        mix gains linear [0.35 / 1.0]
-//!   --sat F                wet tanh drive, 0 = linear [1.0]
 //!   --morph N              IR transition speed, partitions/frame 1..16 [1]
 //!   --fade N               per-partition write fade, frames 1..16 [4]
 //!   --tails gated|ungated  old-IR policy: stream-replace vs ring-out [gated]
@@ -114,7 +113,6 @@ fn main() {
     let mut attack = 5.0;
     let mut release = 120.0;
     let mut wet = 0.35;
-    let mut sat = 1.0;
     let mut sym: Option<f64> = None;
     let mut morph = 1.0;
     let mut fade = 4.0;
@@ -167,7 +165,6 @@ fn main() {
             "--attack" => attack = val().parse().unwrap_or_else(|_| die("bad --attack")),
             "--release" => release = val().parse().unwrap_or_else(|_| die("bad --release")),
             "--wet" => wet = val().parse().unwrap_or_else(|_| die("bad --wet")),
-            "--sat" => sat = val().parse().unwrap_or_else(|_| die("bad --sat")),
             "--sym" => sym = Some(val().parse().unwrap_or_else(|_| die("bad --sym"))),
             "--morph" => morph = val().parse().unwrap_or_else(|_| die("bad --morph")),
             "--fade" => fade = val().parse().unwrap_or_else(|_| die("bad --fade")),
@@ -257,7 +254,6 @@ fn main() {
         attack_ms: attack,
         release_ms: release,
         wet,
-        sat,
         sym: sym.unwrap_or(if sym_from_mode { 1.0 } else { 0.0 }),
         morph,
         fade_frames: fade,

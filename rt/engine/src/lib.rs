@@ -100,10 +100,6 @@ pub struct EngineParams {
     /// IR stretch ratio (resampling, pitch-coupled — the classic "size").
     /// Changes are honored by [`Engine::service`] via partition streaming.
     pub size: f64,
-    /// Wet soft-saturation drive (tanh(w·d)/d). 0 (default) = fully
-    /// linear — float headroom carries hot wet cleanly; trim Wet instead.
-    /// >0 = deliberate saturation color (1 ≈ transparent below −12 dBFS).
-    pub sat: f64,
     /// Symmetry, 0..1: on negative half-cycles the zone ladder is blended
     /// toward its mirror (zone z ↔ n_zones−1−z). 0 = off; 1 = full
     /// cross-fire (the former "xsign" mode). A sound-design bend of
@@ -143,7 +139,6 @@ impl Default for EngineParams {
             wet: 0.35,
             dry: 1.0,
             size: 1.0,
-            sat: 0.0,
             sym: 0.0,
             morph: 1.0,
             fade_frames: 4.0,
@@ -1158,16 +1153,12 @@ impl Engine {
             }
         }
 
-        // --- mix to output FIFO ---------------------------------------
+        // --- mix to output FIFO (fully linear: no saturation stage —
+        //     "distortion bad" is engine law; hot wet rides float headroom)
         let dry = p.dry as f32;
-        let sat = p.sat.max(0.0) as f32;
         for c in 0..channels {
             for i in 0..part {
-                let mut w = self.wet[c][i];
-                if sat > 0.0 {
-                    w = (w * sat).tanh() / sat;
-                }
-                self.out_fifo[c].push_back(self.in_fifo[c][i] * dry + w);
+                self.out_fifo[c].push_back(self.in_fifo[c][i] * dry + self.wet[c][i]);
             }
         }
         self.t += part as u64;
@@ -1289,7 +1280,6 @@ mod tests {
             n_zones: 1,
             wet: 1.0,
             dry: 0.0,
-            sat: 0.0, // linear: these tests compare against exact convolution
             ..Default::default()
         }
     }

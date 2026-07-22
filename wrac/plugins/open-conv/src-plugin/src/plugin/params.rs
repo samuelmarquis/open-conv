@@ -15,7 +15,7 @@ use crate::state::SharedState;
 pub(crate) const PARAM_BYPASS_ID: u32 = 0;
 pub(crate) const PARAM_WET_ID: u32 = 1;
 pub(crate) const PARAM_DRY_ID: u32 = 2;
-pub(crate) const PARAM_SAT_ID: u32 = 3;
+// id 3 retired (Wet Sat — removed: no saturation stage exists)
 pub(crate) const PARAM_SYM_ID: u32 = 4;
 pub(crate) const PARAM_SIZE_ID: u32 = 5;
 pub(crate) const PARAM_MODE_ID: u32 = 6;
@@ -145,7 +145,6 @@ const PARAM_SPECS: &[ParameterSpec] = &[
     choice(PARAM_BYPASS_ID, "Bypass", "", OFF_ON, 0.0, true),
     continuous(PARAM_WET_ID, "Wet", "mix", 0.0, 1.0, 0.35, Format::Percent),
     continuous(PARAM_DRY_ID, "Dry", "mix", 0.0, 1.0, 1.0, Format::Percent),
-    continuous(PARAM_SAT_ID, "Wet Sat", "mix", 0.0, 4.0, 0.0, Format::Ratio),
     continuous(PARAM_SYM_ID, "Symmetry", "selector", 0.0, 1.0, 0.0, Format::Percent),
     continuous(PARAM_SIZE_ID, "Size", "ir", 0.25, 4.0, 1.0, Format::Ratio),
     choice(PARAM_MODE_ID, "Selector", "selector", &["Instant", "Envelope"], 1.0, false),

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "OpenConv - level-gated, streaming-IR convolution reverb"
 license = "GPL-3.0-or-later"
-repository = "https://github.com/eoxsy/open-conv"
+repository = "https://github.com/samuelmarquis/open-conv"
 publish = false
 build = "build.rs"
 
@@ -19,9 +19,9 @@ aax_manufacturer_id = "Ocnv"
 # Shared CLAP/VST3/AAX bundle name.
 bundle_name = "OpenConv"
 bundle_identifier = "org.open-conv.open-conv"
-homepage_url = "https://github.com/eoxsy/open-conv"
-manual_url = "https://github.com/eoxsy/open-conv/blob/main/docs/PARAMS.md"
-support_url = "https://github.com/eoxsy/open-conv"
+homepage_url = "https://github.com/samuelmarquis/open-conv"
+manual_url = "https://github.com/samuelmarquis/open-conv/blob/main/docs/PARAMS.md"
+support_url = "https://github.com/samuelmarquis/open-conv"
 description = "Level-gated, streaming-IR convolution reverb (dynamic convolution for spaces)"
 copyright = "Copyright 2026 open-conv contributors, GPL-3.0-or-later"
 supported_formats = ["clap", "vst3", "au"]

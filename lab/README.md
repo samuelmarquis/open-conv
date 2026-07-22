@@ -32,5 +32,6 @@ directory (`python exp01_factorization.py` …) inside `nix develop`.
   `out/` (untracked) for listening.
 
 Iterations are strategy toggles selected per listening batch, numbered in
-LISTENING-LOG.md, not in filenames. **Freeze note:** once the Rust engine
+LISTENING-LOG.md (the maintainer's local, untracked listening diary), not
+in filenames. **Freeze note:** once the Rust engine
 is canonical, this lab gets a header saying exactly that + known drift.

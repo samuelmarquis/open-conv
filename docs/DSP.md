@@ -5,7 +5,8 @@ It is written to ASD-STE100 Simplified Technical English: short
 sentences, one idea for each sentence, and one meaning for each word.
 Section 1 defines the technical names. Formulas and tables are data,
 not prose. The unit tests are the exact version of this document. The
-reason for each decision is in `LISTENING-LOG.md`. The plan that came
+reason for each decision is in `LISTENING-LOG.md` (the maintainer's
+local listening diary — not in the repo). The plan that came
 before the code is `design/01-architecture.md`. The evidence base is
 `research/01-prior-art.md` (the "§" references point into it). A
 denser engineering version of this document is in the git history

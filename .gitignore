@@ -7,6 +7,10 @@ out/
 testdata/reference/
 testdata/material/
 
+# the maintainer's listening diary — the decision record for the humans in
+# the loop, not for users; stays local (template law, 2026-07-22)
+LISTENING-LOG.md
+
 # python
 __pycache__/
 *.pyc

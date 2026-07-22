@@ -32,7 +32,9 @@ open_conv_plugin_wrac --release`.
   branch factorization exactness; replacement-vs-crossfade SNR)
 - `tools/make_probes.py` — synthesizes `testdata/probes/` (committed script,
   generated audio stays untracked)
-- `LISTENING-LOG.md` / `PATHS-NOT-TAKEN.md` — the decision records
+- `PATHS-NOT-TAKEN.md` — deferred designs and why (with re-entry notes).
+  Code and docs also cite `LISTENING-LOG.md` — the maintainer's listening
+  diary, which stays local/untracked; batch and defect numbers refer to it.
 
 ## Build / run
 

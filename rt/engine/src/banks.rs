@@ -1,6 +1,7 @@
 //! Synthetic IR banks + IR normalization, shared by the CLI renderer and
 //! the plugin's worker thread. All deterministic (seeded xorshift), all
-//! normalized by [`windowed_spectral_norm`] (see LISTENING-LOG Defect 001
+//! normalized by [`windowed_spectral_norm`] (see LISTENING-LOG — the
+//! maintainer's local, untracked listening diary — Defect 001
 //! for why that specific law).
 
 /// The built-in bank set, quiet zone (0) → loud zone (3).

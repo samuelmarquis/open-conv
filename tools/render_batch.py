@@ -5,7 +5,8 @@ Usage (repo root, inside nix develop):
     python tools/render_batch.py batch003 batch004
 
 Per batch spec below this renders every file, then enforces two gates that
-exist because each caught a real shipped defect (see LISTENING-LOG):
+exist because each caught a real shipped defect (see LISTENING-LOG — the
+maintainer's local, untracked listening diary):
 
 - PEAK gate: any render peaking above -1 dBFS gets its --wet auto-trimmed
   and re-rendered (up to 3 iterations). Peaks alone once hid defect #2.

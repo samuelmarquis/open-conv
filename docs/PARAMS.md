@@ -77,6 +77,16 @@ Harmonic weighting in Crystalize: order k is scaled by gainᵏ⁻¹, so the
 clean order is invariant and each higher order rises with the knob.
 Low = a whisper of octave-room; high = the harmonic rooms roar.
 
+### 36 — Crystal Shape (ir) — Cheby / Raw v1 (Cheby)
+
+Two distinct harmonic instruments (verdict: "TOTALLY DISTINCT", both
+keepers). **Cheby**: bounded Chebyshev generator — diffuse, harmonically
+pure at full drive, can never run away. **Raw v1**: the original power
+law — even orders rectify the envelope into a rough low-end *rumble*
+after impacts (goes tonal at low Size); the exact v1 waveform at every
+knob position, with the level law tempered above 2× gain (per-order
+boost climbs at ⅓ the dB slope past the beloved g ≤ 2 region).
+
 ## Practical notes
 
 - **Level is a parameter.** Zone selection reads absolute input level —

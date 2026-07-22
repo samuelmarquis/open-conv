@@ -1088,8 +1088,24 @@ impl Engine {
                                             _ => 0.5 * (8.0 * s * s - 8.0) * s * s, // T4+1
                                         }
                                     }
-                                    // v1 verbatim: unbounded on purpose.
-                                    CrystalShape::RawV1 => (g * lp2).powi(order) / g,
+                                    // Raw: v1's exact waveform at every
+                                    // knob position — pure powers are
+                                    // homogeneous, so pre-gain ≡ post-gain
+                                    // and only the LEVEL law changes.
+                                    // Identical to v1 for g ≤ 2 (the
+                                    // beloved region); above, per-order
+                                    // boost climbs at 1/3 the dB slope
+                                    // (g=8: order 4 +30 dB, not +54).
+                                    CrystalShape::RawV1 => {
+                                        let km1 = (order - 1) as f32;
+                                        let mult = if g <= 2.0 {
+                                            g.powf(km1)
+                                        } else {
+                                            2.0f32.powf(km1)
+                                                * (g / 2.0).powf(km1 / 3.0)
+                                        };
+                                        lp2.powi(order) * mult
+                                    }
                                 }
                             };
                             if even {

@@ -1,0 +1,75 @@
+[package]
+name = "open_conv_plugin_wrac"
+version = "0.1.0"
+edition = "2024"
+description = "OpenConv - level-gated, streaming-IR convolution reverb"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/eoxsy/open-conv"
+publish = false
+build = "build.rs"
+
+# WRAC metadata is the single source of truth for host-visible descriptors,
+# bundle names, wrapper arguments, and AUv2 registration. Public IDs and
+# FourCC values are host/project ABI — never change after release.
+[package.metadata.wrac]
+company_name = "open-conv"
+# AUv2 manufacturer code: 4 ASCII bytes, shared across this vendor's AU catalog.
+auv2_manufacturer_code = "Ocnv"
+aax_manufacturer_id = "Ocnv"
+# Shared CLAP/VST3/AAX bundle name.
+bundle_name = "OpenConv"
+bundle_identifier = "org.open-conv.open-conv"
+homepage_url = "https://github.com/eoxsy/open-conv"
+manual_url = "https://github.com/eoxsy/open-conv/blob/main/docs/PARAMS.md"
+support_url = "https://github.com/eoxsy/open-conv"
+description = "Level-gated, streaming-IR convolution reverb (dynamic convolution for spaces)"
+copyright = "Copyright 2026 open-conv contributors, GPL-3.0-or-later"
+supported_formats = ["clap", "vst3", "au"]
+
+[[package.metadata.wrac.plugins]]
+plugin_id = "org.open-conv.open-conv"
+plugin_name = "OpenConv"
+clap_features = ["audio-effect", "reverb", "stereo"]
+vst3_subcategories = "Fx|Reverb"
+# Generated once 2026-07-21; stable forever (build.rs handles the TUID swap).
+vst3_component_id = "c06f689b-46be-47df-86af-abfaf063ae3b"
+standalone_name = "OpenConv Standalone"
+# Plain audio effect, no MIDI input.
+auv2_type = "aufx"
+auv2_subtype = "Ocv1"
+aax_categories = ["effect"]
+aax_product_id = "Ocv1"
+
+[[package.metadata.wrac.plugins.aax_stem_configs]]
+# Inert while "aax" is not in supported_formats; schema requires the table.
+name = "Mono"
+input = "mono"
+output = "mono"
+plugin_id = "OcvM"
+
+[[package.metadata.wrac.plugins.aax_stem_configs]]
+name = "Stereo"
+input = "stereo"
+output = "stereo"
+plugin_id = "OcvS"
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[dependencies]
+atomic_float = "1.1.0"
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+wrac_clap_adapter = { workspace = true }
+wrac_log = { workspace = true }
+open-conv-engine = { path = "../../../../rt/engine" }
+# wav loading for the watched-folder zone IRs (worker thread only)
+hound = "3"
+
+[lints.rust]
+unreachable_pub = "deny"
+
+[build-dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

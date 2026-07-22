@@ -145,6 +145,20 @@ def thumps_desc():
     write("thumps_desc.wav", np.concatenate(parts))
 
 
+def bursts_desc():
+    """Broadband pink-noise bursts, loudest first: the full-spectrum
+    sibling of thumps_desc — excites an IR across its whole bandwidth
+    (a sine probe only reveals the IR at its own frequency). For
+    auditioning tails, damping, and anything spectral."""
+    parts = []
+    for l in np.linspace(-3, -45, 8):
+        seg = np.zeros(int(1.2 * SR))
+        b = pink(int(0.08 * SR)) * 10 ** (float(l) / 20)
+        seg[100 : 100 + len(b)] = fade(b, 3)
+        parts.append(seg)
+    write("bursts_desc.wav", np.concatenate(parts))
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     print("probes -> testdata/probes/")
@@ -154,3 +168,4 @@ if __name__ == "__main__":
     sweepbed()
     thumps()
     thumps_desc()
+    bursts_desc()

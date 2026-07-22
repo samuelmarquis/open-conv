@@ -115,8 +115,11 @@ def mono(path):
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
-    # descending variant: loudest first (browser-A/B ergonomics)
-    probe = mono("../testdata/probes/thumps_desc.wav")
+    # Broadband excitation (a sine probe only reveals the IR at its own
+    # frequency — batch-009 feedback). Loudest-first for browser A/B.
+    probe = mono("../testdata/probes/bursts_desc.wav")
+    # Real-material check: first 6 s of the scrape slice.
+    scrape = mono("../testdata/material/scrape.wav")[: 6 * SR]
 
     irs = {
         "noiseroom": exp_decay_noise(2.5, SR, t60=1.8, cutoff=5000.0, seed=3),
@@ -145,4 +148,7 @@ if __name__ == "__main__":
             y = fftconvolve(probe, h)
             y *= 0.9 / max(np.max(np.abs(y)), 1e-9)
             sf.write(f"{OUT}/{name}_conv_{tag}.wav", y.astype(np.float32), SR)
+            ys = fftconvolve(scrape, h)
+            ys *= 0.9 / max(np.max(np.abs(ys)), 1e-9)
+            sf.write(f"{OUT}/{name}_scrape_{tag}.wav", ys.astype(np.float32), SR)
     print(f"wrote A/B pairs to {OUT}/ — the ears gate phase 2.")

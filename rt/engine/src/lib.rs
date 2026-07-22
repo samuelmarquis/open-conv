@@ -1050,10 +1050,23 @@ impl Engine {
                             let x = self.in_fifo[c][i];
                             lp1 += alpha * (x - lp1);
                             lp2 += alpha * (lp1 - lp2);
+                            // Bounded power shaper: below the knee
+                            // s ≈ g·lp, so order k ≈ g^(k−1)·lpᵏ (the
+                            // Crystal Gain law); at hot levels |s|→1 so
+                            // |order| ≤ |input| — the first version's
+                            // raw (g·x)ᵏ/g exploded past g·x = 1
+                            // ("annihilated my limiter").
                             let mut v = if order == 1 {
                                 x
                             } else {
-                                (g * lp2).powi(order) / g
+                                let gs = g * lp2;
+                                let s = gs / (1.0 + gs * gs).sqrt();
+                                // ×0.5 per order step: order k ceilings
+                                // 6·(k−1) dB under the fundamental — a
+                                // natural harmonic rolloff ("really
+                                // fucking loud" verdict on the unity
+                                // ceiling). Zone Gains override per order.
+                                lp2 * (0.5 * s).powi(order - 1)
                             };
                             if even {
                                 // DC-block: x^even of a sine carries DC

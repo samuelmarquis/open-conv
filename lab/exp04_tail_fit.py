@@ -118,8 +118,13 @@ if __name__ == "__main__":
     # Broadband excitation (a sine probe only reveals the IR at its own
     # frequency — batch-009 feedback). Loudest-first for browser A/B.
     probe = mono("../testdata/probes/bursts_desc.wav")
-    # Real-material check: first 6 s of the scrape slice.
-    scrape = mono("../testdata/material/scrape.wav")[: 6 * SR]
+    # Real-material checks: scrape, the loop, and the bt kicks —
+    # the batch-002 trinity, for old time's sake.
+    material = {
+        "scrape": mono("../testdata/material/scrape.wav")[: 6 * SR],
+        "loop": mono("../testdata/material/loop_aphex90.wav")[: 6 * SR],
+        "kicks": mono("../testdata/material/kicks.wav")[: 8 * SR],
+    }
 
     irs = {
         "noiseroom": exp_decay_noise(2.5, SR, t60=1.8, cutoff=5000.0, seed=3),
@@ -148,7 +153,8 @@ if __name__ == "__main__":
             y = fftconvolve(probe, h)
             y *= 0.9 / max(np.max(np.abs(y)), 1e-9)
             sf.write(f"{OUT}/{name}_conv_{tag}.wav", y.astype(np.float32), SR)
-            ys = fftconvolve(scrape, h)
-            ys *= 0.9 / max(np.max(np.abs(ys)), 1e-9)
-            sf.write(f"{OUT}/{name}_scrape_{tag}.wav", ys.astype(np.float32), SR)
+            for mname, m in material.items():
+                ym = fftconvolve(m, h)
+                ym *= 0.9 / max(np.max(np.abs(ym)), 1e-9)
+                sf.write(f"{OUT}/{name}_{mname}_{tag}.wav", ym.astype(np.float32), SR)
     print(f"wrote A/B pairs to {OUT}/ — the ears gate phase 2.")

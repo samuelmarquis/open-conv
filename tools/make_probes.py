@@ -124,6 +124,27 @@ def thumps():
     write("thumps.wav", np.concatenate(parts))
 
 
+def thumps_desc():
+    """thumps, frontloaded: loudest first (A/B ergonomics — the telling
+    content plays immediately when flipping files in a browser).
+    8-step velocity ramp descending -3..-54, then zone centers loud→quiet."""
+    def thump(level_db, f=55.0, dur=0.08):
+        t = np.arange(int(dur * SR)) / SR
+        return np.sin(2 * np.pi * f * t) * np.hanning(len(t)) * 10 ** (level_db / 20)
+    parts = []
+    for l in np.linspace(-3, -54, 8):
+        seg = np.zeros(int(1.0 * SR))
+        tb = thump(float(l))
+        seg[100 : 100 + len(tb)] = tb
+        parts.append(seg)
+    for l in [-6, -18, -30, -48]:
+        seg = np.zeros(int(1.6 * SR))
+        tb = thump(l)
+        seg[100 : 100 + len(tb)] = tb
+        parts.append(seg)
+    write("thumps_desc.wav", np.concatenate(parts))
+
+
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
     print("probes -> testdata/probes/")
@@ -132,3 +153,4 @@ if __name__ == "__main__":
     impulses()
     sweepbed()
     thumps()
+    thumps_desc()

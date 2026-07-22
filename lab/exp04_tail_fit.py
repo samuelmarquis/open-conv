@@ -115,7 +115,8 @@ def mono(path):
 
 if __name__ == "__main__":
     os.makedirs(OUT, exist_ok=True)
-    probe = mono("../testdata/probes/thumps.wav")
+    # descending variant: loudest first (browser-A/B ergonomics)
+    probe = mono("../testdata/probes/thumps_desc.wav")
 
     irs = {
         "noiseroom": exp_decay_noise(2.5, SR, t60=1.8, cutoff=5000.0, seed=3),

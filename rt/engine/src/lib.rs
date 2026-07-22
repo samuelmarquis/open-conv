@@ -79,6 +79,18 @@ pub enum ShaperMode {
     Crystal,
 }
 
+/// Crystalize shaper flavor (A/B surface; see the batch-008 saga).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CrystalShape {
+    /// Chebyshev on the bounded signal: can't explode, approaches pure
+    /// k-th harmonics at full drive.
+    Cheby,
+    /// The original raw power law (g·x)ᵏ/g — UNBOUNDED past g·x = 1
+    /// (level can run away tens of dB). Kept for A/B and for anyone who
+    /// wants the sharpened-spike chaos on purpose.
+    RawV1,
+}
+
 /// How the zone selector reads the input level.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LevelMode {
@@ -149,6 +161,8 @@ pub struct EngineParams {
     /// so order 1 is drive-invariant and each higher order gains g per
     /// step. Only meaningful in [`ShaperMode::Crystal`].
     pub drive: f64,
+    /// Crystalize shaper flavor — see [`CrystalShape`].
+    pub crystal_shape: CrystalShape,
     /// Ring-out voices kept per zone in Ungated mode, 1..=RING_SLOTS
     /// (default: max). History depth, not bank size. Not exposed in the
     /// plugin (capacity is the behavior; CPU scales with actual ringing
@@ -179,6 +193,7 @@ impl Default for EngineParams {
             damp: [0.0; MAX_ZONES],
             shaper: ShaperMode::Zones,
             drive: 2.0,
+            crystal_shape: CrystalShape::Cheby,
         }
     }
 }
@@ -1063,12 +1078,18 @@ impl Engine {
                             let mut v = if order == 1 {
                                 x
                             } else {
-                                let gs = g * lp2;
-                                let s = gs / (1.0 + gs * gs).sqrt();
-                                match order {
-                                    2 => 0.5 * (2.0 * s * s), // T2+1
-                                    3 => (4.0 * s * s - 3.0) * s, // T3
-                                    _ => 0.5 * (8.0 * s * s - 8.0) * s * s, // T4+1
+                                match p.crystal_shape {
+                                    CrystalShape::Cheby => {
+                                        let gs = g * lp2;
+                                        let s = gs / (1.0 + gs * gs).sqrt();
+                                        match order {
+                                            2 => 0.5 * (2.0 * s * s), // T2+1
+                                            3 => (4.0 * s * s - 3.0) * s, // T3
+                                            _ => 0.5 * (8.0 * s * s - 8.0) * s * s, // T4+1
+                                        }
+                                    }
+                                    // v1 verbatim: unbounded on purpose.
+                                    CrystalShape::RawV1 => (g * lp2).powi(order) / g,
                                 }
                             };
                             if even {

@@ -9,18 +9,18 @@
 use atomic_float::AtomicF32;
 use std::sync::atomic::Ordering;
 
-use open_conv_engine::{EngineParams, LevelMode, MAX_ZONES, ShaperMode, TailMode};
+use open_conv_engine::{CrystalShape, EngineParams, LevelMode, MAX_ZONES, ShaperMode, TailMode};
 
 use crate::plugin::{
     PARAM_ATTACK_ID, PARAM_BLEND_X_ID, PARAM_BLEND_Y_ID, PARAM_CORNER_IDS, PARAM_CRYSTAL_ID,
-    PARAM_DAMP_IDS, PARAM_BYPASS_ID, PARAM_DRY_ID, PARAM_FADE_ID, PARAM_MODE_ID, PARAM_SHAPER_ID,
+    PARAM_CRYSTAL_SHAPE_ID, PARAM_DAMP_IDS, PARAM_BYPASS_ID, PARAM_DRY_ID, PARAM_FADE_ID, PARAM_MODE_ID, PARAM_SHAPER_ID,
     PARAM_MORPH_ID, PARAM_RELEASE_ID, PARAM_RELOAD_ID, PARAM_SIZE_ID, PARAM_SYM_ID, PARAM_TAILS_ID,
     PARAM_WET_ID, PARAM_ZONES_ID, PARAM_ZONE_GAIN_IDS, PARAM_ZONE_LEVEL_IDS, param_clamp,
     param_default, param_exists,
 };
 
 // Indexed by param id; ids 3 (Wet Sat) and 18 (IR Bank) are retired/dead.
-pub(crate) const PARAM_SLOTS: usize = 36;
+pub(crate) const PARAM_SLOTS: usize = 37;
 
 pub(crate) struct SharedState {
     values: [AtomicF32; PARAM_SLOTS],
@@ -112,6 +112,11 @@ impl SharedState {
                 ShaperMode::Zones
             },
             drive: self.v(PARAM_CRYSTAL_ID) as f64,
+            crystal_shape: if self.v(PARAM_CRYSTAL_SHAPE_ID) >= 0.5 {
+                CrystalShape::RawV1
+            } else {
+                CrystalShape::Cheby
+            },
         };
         if self.bypass() {
             p.wet = 0.0;

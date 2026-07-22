@@ -18,7 +18,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 
 use open_conv_engine::{
-    DEFAULT_MAX_IR_SECONDS, DEFAULT_PARTITION, Engine, IrRenderer, MAX_ZONES, PartitionSet, banks,
+    CORNERS, DEFAULT_MAX_IR_SECONDS, DEFAULT_PARTITION, Engine, IrRenderer, MAX_ZONES,
+    PartitionSet, banks,
 };
 use wrac_clap_adapter::{
     AudioPortChannels, InputEvent, PluginResult, ProcessContext, ProcessStatus, Processor,
@@ -41,13 +42,19 @@ enum ToWorker {
     /// ever be dropped by unlucky timing (the bug behind the batch-007
     /// automation non-determinism report). `load_gen` bumps on bank
     /// changes / reload edges to force a source re-read.
-    Sync { bank: usize, size: f64, load_gen: u64 },
+    Sync {
+        corners: [usize; CORNERS],
+        size: f64,
+        damp: [f64; MAX_ZONES],
+        load_gen: u64,
+    },
     /// Drop a spent/displaced set off the audio thread.
     Dispose(PartitionSet),
 }
 
 struct FromWorker {
     zone: usize,
+    corner: usize,
     set: PartitionSet,
 }
 
@@ -61,8 +68,9 @@ pub(crate) struct OpenConvAudioProcessor {
     to_worker: Sender<ToWorker>,
     from_worker: Receiver<FromWorker>,
     _worker: std::thread::JoinHandle<()>,
-    synced_bank: usize,
+    synced_corners: [usize; CORNERS],
     synced_size: f64,
+    synced_damp: [f64; MAX_ZONES],
     last_reload: bool,
     dirty_load: bool,
     load_gen: u64,
@@ -88,10 +96,11 @@ impl OpenConvAudioProcessor {
             .expect("spawn IR worker");
 
         let params = shared.engine_params();
-        let bank = shared.bank_index();
+        let corners = shared.corner_banks();
         let _ = to_worker.send(ToWorker::Sync {
-            bank,
+            corners,
             size: params.size,
+            damp: params.damp,
             load_gen: 0,
         });
 
@@ -104,8 +113,9 @@ impl OpenConvAudioProcessor {
             to_worker,
             from_worker,
             _worker: worker,
-            synced_bank: bank,
+            synced_corners: corners,
             synced_size: params.size,
+            synced_damp: params.damp,
             last_reload: false,
             dirty_load: false,
             load_gen: 0,
@@ -132,24 +142,31 @@ impl Processor for OpenConvAudioProcessor {
         // 2) Control changes → one coalesced desired-state Sync, debounced
         //    by wall clock. Deferred, never dropped: dirty flags survive
         //    the debounce window (allocating send, change-rate only).
-        let bank = self.shared.bank_index();
+        let corners = self.shared.corner_banks();
         let reload = self.shared.reload_on();
-        if bank != self.synced_bank || (reload && !self.last_reload) {
+        if corners != self.synced_corners || (reload && !self.last_reload) {
             self.dirty_load = true;
         }
         self.last_reload = reload;
-        let dirty_size = (params.size - self.synced_size).abs() > 1e-3;
-        if (self.dirty_load || dirty_size) && self.samples_since_sync >= self.debounce_samples {
+        let dirty_render = (params.size - self.synced_size).abs() > 1e-3
+            || params
+                .damp
+                .iter()
+                .zip(self.synced_damp.iter())
+                .any(|(a, b)| (a - b).abs() > 1e-3);
+        if (self.dirty_load || dirty_render) && self.samples_since_sync >= self.debounce_samples {
             if self.dirty_load {
                 self.load_gen += 1;
                 self.dirty_load = false;
             }
-            self.synced_bank = bank;
+            self.synced_corners = corners;
             self.synced_size = params.size;
+            self.synced_damp = params.damp;
             self.samples_since_sync = 0;
             let _ = self.to_worker.send(ToWorker::Sync {
-                bank,
+                corners,
                 size: params.size,
+                damp: params.damp,
                 load_gen: self.load_gen,
             });
         }
@@ -157,8 +174,8 @@ impl Processor for OpenConvAudioProcessor {
         // 3) Accept freshly rendered partition sets (move-only handoff).
         //    Channel order is FIFO, so the latest render always lands last;
         //    an in-flight swap is displaced (engine restarts its cursor).
-        while let Ok(FromWorker { zone, set }) = self.from_worker.try_recv() {
-            if let Err(set) = self.engine.queue_partition_set(zone, set, &params) {
+        while let Ok(FromWorker { zone, corner, set }) = self.from_worker.try_recv() {
+            if let Err(set) = self.engine.queue_partition_set(zone, corner, set, &params) {
                 // Geometry mismatch — should be impossible (renderer
                 // built from the same engine); drop off-thread.
                 wrac_log::rtwarn!("rejected partition set for zone {zone}");
@@ -264,24 +281,26 @@ impl Processor for OpenConvAudioProcessor {
 // IR worker (non-RT)
 // ---------------------------------------------------------------------
 
-type Sources = [Option<(Vec<Vec<f32>>, f64)>; MAX_ZONES];
+type ZoneSources = [Option<(Vec<Vec<f32>>, f64)>; MAX_ZONES];
+type Sources = [ZoneSources; CORNERS];
 
 fn worker_main(rx: Receiver<ToWorker>, tx: Sender<FromWorker>, sr: f64) {
     let renderer = IrRenderer::new(sr, DEFAULT_PARTITION, DEFAULT_MAX_IR_SECONDS);
-    let mut sources: Sources = std::array::from_fn(|_| None);
+    let mut sources: Sources = std::array::from_fn(|_| std::array::from_fn(|_| None));
     let mut loaded_gen: u64 = u64::MAX; // force the first load
     while let Ok(first) = rx.recv() {
         // Coalesce everything queued right now down to the newest Sync;
         // disposals are handled inline. Reconciliation, not a task queue.
-        let mut latest: Option<(usize, f64, u64)> = None;
+        let mut latest: Option<([usize; CORNERS], f64, [f64; MAX_ZONES], u64)> = None;
         let mut msg = first;
         loop {
             match msg {
                 ToWorker::Sync {
-                    bank,
+                    corners,
                     size,
+                    damp,
                     load_gen,
-                } => latest = Some((bank, size, load_gen)),
+                } => latest = Some((corners, size, damp, load_gen)),
                 ToWorker::Dispose(set) => drop(set),
             }
             match rx.try_recv() {
@@ -289,34 +308,32 @@ fn worker_main(rx: Receiver<ToWorker>, tx: Sender<FromWorker>, sr: f64) {
                 Err(_) => break,
             }
         }
-        if let Some((bank, size, load_gen)) = latest {
+        if let Some((corners, size, damp, load_gen)) = latest {
             if load_gen != loaded_gen {
-                load_sources(bank, sr, &mut sources);
+                for (ci, bank) in corners.iter().enumerate() {
+                    load_corner(*bank, sr, &mut sources[ci]);
+                }
                 loaded_gen = load_gen;
             }
-            render_all(&renderer, &sources, sr, size, &tx);
+            for ci in 0..CORNERS {
+                for (zone, src) in sources[ci].iter().enumerate() {
+                    let set = match src {
+                        Some((data, ir_sr)) => renderer.render(data, *ir_sr, size, damp[zone]),
+                        // Empty slot: a silent 1-tap IR clears the corner.
+                        None => renderer.render(&[vec![0.0]], sr, size, 0.0),
+                    };
+                    let _ = tx.send(FromWorker {
+                        zone,
+                        corner: ci,
+                        set,
+                    });
+                }
+            }
         }
     }
 }
 
-fn render_all(
-    renderer: &IrRenderer,
-    sources: &Sources,
-    sr: f64,
-    size: f64,
-    tx: &Sender<FromWorker>,
-) {
-    for (zone, src) in sources.iter().enumerate() {
-        let set = match src {
-            Some((data, ir_sr)) => renderer.render(data, *ir_sr, size),
-            // Empty slot: stream a silent 1-tap IR to clear the branch.
-            None => renderer.render(&[vec![0.0]], sr, size),
-        };
-        let _ = tx.send(FromWorker { zone, set });
-    }
-}
-
-fn load_sources(bank: usize, sr: f64, sources: &mut Sources) {
+fn load_corner(bank: usize, sr: f64, sources: &mut ZoneSources) {
     match banks::Bank::from_index(bank) {
         Some(b) => {
             for (zone, slot) in sources.iter_mut().enumerate() {
@@ -324,7 +341,7 @@ fn load_sources(bank: usize, sr: f64, sources: &mut Sources) {
             }
         }
         None => {
-            // Folder mode: ~/Music/open-conv/zone{1..4}.wav
+            // Folder: ~/Music/open-conv/zone{1..4}.wav
             let dir = std::env::var("HOME")
                 .map(|h| std::path::PathBuf::from(h).join("Music").join("open-conv"))
                 .unwrap_or_else(|_| std::path::PathBuf::from("open-conv-irs"));

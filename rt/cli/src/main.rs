@@ -30,6 +30,12 @@
 //!   --fade N               per-partition write fade, frames 1..16 [4]
 //!   --tails gated|ungated  old-IR policy: stream-replace vs ring-out [gated]
 //!   --ring N               ring-out voices kept per zone (ungated) 1..8 [8]
+//!   --corners "a,b,c,d"    synth banks into XY corners NW,NE,SW,SE
+//!                          ("-" skips a corner; folder bank is plugin-only)
+//!   --blend-x F --blend-y F  XY pad position 0..1 [0,0 = NW]
+//!   --damp "a,b,c,d"       per-zone damping 0..1 [0]
+//!   --shaper zones|crystal slot semantics: level zones or harmonic orders
+//!   --crystal F            crystal harmonic gain 1..8 [2]
 //!   --size F               IR stretch ratio [1.0]
 //!   --size-sweep "a:b"     sweep size a→b across the input duration
 //!   --partition N          partition size, power of two [256]
@@ -37,7 +43,7 @@
 //!   --normalize            peak-normalize output to 0.97
 //!   --viz-dump FILE.jsonl  drain the viz ring to JSON lines
 
-use open_conv_engine::{Engine, EngineParams, LevelMode, MAX_ZONES, TailMode};
+use open_conv_engine::{CORNERS, Engine, EngineParams, LevelMode, MAX_ZONES, ShaperMode, TailMode};
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 
@@ -117,6 +123,12 @@ fn main() {
     let mut morph = 1.0;
     let mut fade = 4.0;
     let mut ring = 8.0;
+    let mut corners: Option<String> = None;
+    let mut blend_x = 0.0;
+    let mut blend_y = 0.0;
+    let mut damp_list: Option<Vec<f64>> = None;
+    let mut shaper = ShaperMode::Zones;
+    let mut crystal = 2.0;
     let mut tails = TailMode::Gated;
     let mut sym_from_mode = false;
     let mut dry = 1.0;
@@ -169,6 +181,18 @@ fn main() {
             "--morph" => morph = val().parse().unwrap_or_else(|_| die("bad --morph")),
             "--fade" => fade = val().parse().unwrap_or_else(|_| die("bad --fade")),
             "--ring" => ring = val().parse().unwrap_or_else(|_| die("bad --ring")),
+            "--corners" => corners = Some(val()),
+            "--blend-x" => blend_x = val().parse().unwrap_or_else(|_| die("bad --blend-x")),
+            "--blend-y" => blend_y = val().parse().unwrap_or_else(|_| die("bad --blend-y")),
+            "--damp" => damp_list = Some(parse_list(&val())),
+            "--shaper" => {
+                shaper = match val().as_str() {
+                    "zones" => ShaperMode::Zones,
+                    "crystal" | "crystalize" => ShaperMode::Crystal,
+                    m => die(&format!("unknown shaper {m}")),
+                }
+            }
+            "--crystal" => crystal = val().parse().unwrap_or_else(|_| die("bad --crystal")),
             "--tails" => {
                 tails = match val().as_str() {
                     "gated" => TailMode::Gated,
@@ -230,8 +254,8 @@ fn main() {
             n_loaded = n_loaded.max(z + 1);
         }
     }
-    if n_loaded == 0 {
-        die("no IRs: give --ir0..--ir3 or --synth-irs");
+    if n_loaded == 0 && corners.is_none() {
+        die("no IRs: give --ir0..--ir3, --synth-irs, or --corners");
     }
 
     // Mono input through a stereo IR renders stereo (dry broadcast to
@@ -259,6 +283,19 @@ fn main() {
         fade_frames: fade,
         tails,
         ring,
+        blend_x,
+        blend_y,
+        damp: {
+            let mut d = [0.0f64; MAX_ZONES];
+            if let Some(dl) = &damp_list {
+                for (i, v) in dl.iter().take(MAX_ZONES).enumerate() {
+                    d[i] = *v;
+                }
+            }
+            d
+        },
+        shaper,
+        drive: crystal,
         dry,
         size,
         ..Default::default()
@@ -271,6 +308,21 @@ fn main() {
     if let Some(gs) = gains {
         for (i, v) in gs.iter().take(MAX_ZONES).enumerate() {
             p.zone_gain[i] = *v;
+        }
+    }
+
+    // --- XY pad corners (synth banks into corners 1..3; corner 0 came
+    //     from --bank/--ir flags above) ---------------------------------
+    if let Some(spec) = &corners {
+        for (ci, name) in spec.split(',').take(CORNERS).enumerate() {
+            let name = name.trim();
+            if name.is_empty() || name == "-" {
+                continue;
+            }
+            for z in 0..MAX_ZONES {
+                engine.set_source_ir_at(z, ci, synth_bank(name, z, sr), sr, size);
+            }
+            n_loaded = MAX_ZONES; // corner banks fill the whole ladder
         }
     }
 

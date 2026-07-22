@@ -28,11 +28,54 @@ with Morph Speed.
 | 10 | **Zones** | zones | 1–4 (4) | Active zone count. 1 = an ordinary (single-IR) convolver — useful as a reference/regression setting. |
 | 11–14 | **Zone 1–4 Level** | zones | −70–0 dB (−48/−30/−18/−6) | The dB centers of the zones' triangular crossfade windows, quiet → loud. Below Zone 1's center everything is Zone 1; above the top center everything is the top zone. Slider order is safe: the engine keeps centers ascending internally (≥ 0.5 dB apart). Packing centers into your material's crest range makes the ladder *move* more. |
 | 15–18 | **Zone 1–4 Gain** | zones | 0–200% (100%) | Per-zone wet trim. Sample-based IRs (Folder bank) are usually denser than the designed banks and want lower gains; also your per-zone balance tool (e.g. duck the loud-zone room, feature the ghost-note room). |
-| 19 | **IR Bank** | ir | Rooms / Subdrop / Resoroom / Folder (Subdrop) | Which IR set fills the zones. **Rooms**: noise rooms, quiet = long/dark → loud = short/bright. **Subdrop**: 808-shaped tuned booms with downward pitch glide, loud = deepest/hardest — velocity picks the boom; Size retunes it. **Resoroom**: noise chambers + damped low modes (dub weight). **Folder**: your own samples from `~/Music/open-conv/zone1.wav … zone4.wav` — any wav becomes a zone's space (normalized automatically). |
+| 19 | *(retired)* | — | — | The single IR Bank selector was superseded by the XY pad (params 24–29). |
 | 20 | **Reload IRs** | ir | Off/On (Off) | Edge-triggered: each Off→On flip re-reads the Folder bank from disk (and re-renders whatever bank is active). Drop new samples in the folder, flip this, hear them stream in. Leaving it On is harmless; only the rising edge acts. |
 | 21 | **Morph Speed** | ir | 1.00×–16.00× (1.00×) | IR transition rate (Gated tails only): convolver partitions replaced per 256-sample frame. **1×** = strict streaming (a transition takes the whole tail length — the luxurious glide). **16×** ≈ 200 ms for a 3 s IR — use 12–16× when automating Size/Bank per hit so changes track the hits. Middle values (4–8×) are their own sound: each hit catches the previous hit's room still morphing. Always click-free; this only sets how wide the in-between window is. |
 | 22 | **Transition Fade** | ir | 1–16 frames (4) | How sharply each replaced partition lands (Gated tails only): each write fades over N frames (~5.3 ms each). **1** = hard per-partition steps — the "skitter" edge, on purpose. **4** = default rounding (~21 ms). **16** ≈ 85 ms maximal smear. Interacts with Morph Speed: fast morphs + fade 1 = maximum grit. |
 | 23 | **Tails** | ir | Gated / Ungated (Gated) | What happens to the old room when a new IR arrives. **Gated**: streaming replacement — the room *morphs* (one voice per zone; Morph/Fade shape it). **Ungated**: the old room is frozen and **rings out its entire tail naturally** while the new room starts fresh — exact parallel convolution, click-free by construction; Morph/Fade don't apply. Up to 8 old rooms ring per zone (history depth, not bank size — a bank's 4 samples are the 4 level zones); switch faster than they decay and the oldest fades out over ~50 ms to make room (never hard-cut). With a jittery Bank LFO this is reverb-cloud territory: every flip leaves the previous space hanging in the air. |
+
+### 24–27 — Pad NW / NE / SW / SE (pad) — bank per corner (Subdrop / Rooms / Resoroom / Folder)
+
+The XY pad's four corners: each holds a bank — **Rooms** (noise rooms,
+quiet = long/dark → loud = short/bright), **Subdrop** (808-shaped tuned
+booms, loud = deepest; Size retunes them), **Resoroom** (noise chambers +
+damped low modes), **Folder** (your samples from
+`~/Music/open-conv/zone1..4.wav`, normalized automatically). Reorder
+corners freely — that's how you choose what a Blend sweep passes through.
+
+### 28–29 — Blend X / Blend Y (pad) — 0–100% (0%, 0%)
+
+The ball on the pad. Bilinear blend between the four corner banks —
+**output-gain math, so it's instant**: no re-render, no debounce, no
+transition time. LFO it, ride it, snap it — always click-free, in both
+tail modes. (0,0) = pure NW. Corners at ~zero weight cost no CPU.
+The literal draggable ball arrives with the native panel; until then X/Y
+are two automatable sliders (map them to a MIDI XY controller).
+
+### 30–33 — Zone 1–4 Damp (zones) — 0–100% (0%)
+
+Per-zone absorption: a lowpass whose cutoff glides down along the IR's
+tail (reaching `18k→600 Hz` at 100%, −12 dB/oct, full depth by 40% into
+the tail). The IR's head stays bright — the sample's identity — while
+the wash darkens like walls soaking it up. Automating it re-renders in
+the background and streams in at Morph Speed, like Size.
+
+### 34 — Mode (ir) — Zones / Crystalize (Zones)
+
+What the four slots mean. **Zones**: the level ladder (everything above).
+**Crystalize**: slots become harmonic orders — slot 1 hears the clean
+signal, slot 2 its 2nd-harmonic content (x²), slot 3 the 3rd, slot 4 the
+4th — each convolved with its own room. Clean *arithmetic* harmonics:
+no clipping anywhere, inputs pre-lowpassed per order so nothing aliases,
+even orders DC-blocked. Distortion that spatializes instead of crunching.
+Zone Level/Selector/Attack/Release/Symmetry are inactive in Crystalize;
+Zone Gains become per-order room sends; the XY pad and Damp still apply.
+
+### 35 — Crystal Gain (ir) — 1.00×–8.00× (2.00×)
+
+Harmonic weighting in Crystalize: order k is scaled by gainᵏ⁻¹, so the
+clean order is invariant and each higher order rises with the knob.
+Low = a whisper of octave-room; high = the harmonic rooms roar.
 
 ## Practical notes
 

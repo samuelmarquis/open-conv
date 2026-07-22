@@ -24,9 +24,15 @@ pub(crate) const PARAM_RELEASE_ID: u32 = 8;
 pub(crate) const PARAM_ZONES_ID: u32 = 9;
 pub(crate) const PARAM_ZONE_LEVEL_IDS: [u32; 4] = [10, 11, 12, 13];
 pub(crate) const PARAM_ZONE_GAIN_IDS: [u32; 4] = [14, 15, 16, 17];
-pub(crate) const PARAM_BANK_ID: u32 = 18;
+// id 18 retired (IR Bank — superseded by the XY pad corner selectors)
 pub(crate) const PARAM_RELOAD_ID: u32 = 19;
 pub(crate) const PARAM_MORPH_ID: u32 = 20;
+pub(crate) const PARAM_CORNER_IDS: [u32; 4] = [24, 25, 26, 27];
+pub(crate) const PARAM_BLEND_X_ID: u32 = 28;
+pub(crate) const PARAM_BLEND_Y_ID: u32 = 29;
+pub(crate) const PARAM_DAMP_IDS: [u32; 4] = [30, 31, 32, 33];
+pub(crate) const PARAM_SHAPER_ID: u32 = 34;
+pub(crate) const PARAM_CRYSTAL_ID: u32 = 35;
 pub(crate) const PARAM_FADE_ID: u32 = 21;
 pub(crate) const PARAM_TAILS_ID: u32 = 22;
 
@@ -159,16 +165,6 @@ const PARAM_SPECS: &[ParameterSpec] = &[
     continuous(PARAM_ZONE_GAIN_IDS[1], "Zone 2 Gain", "zones", 0.0, 2.0, 1.0, Format::Percent),
     continuous(PARAM_ZONE_GAIN_IDS[2], "Zone 3 Gain", "zones", 0.0, 2.0, 1.0, Format::Percent),
     continuous(PARAM_ZONE_GAIN_IDS[3], "Zone 4 Gain", "zones", 0.0, 2.0, 1.0, Format::Percent),
-    // Bank: which IR set the worker loads. "Folder" watches
-    // ~/Music/open-conv/zone{1..4}.wav — drop samples in, hit Reload.
-    choice(
-        PARAM_BANK_ID,
-        "IR Bank",
-        "ir",
-        &["Rooms", "Subdrop", "Resoroom", "Folder"],
-        1.0,
-        false,
-    ),
     // Trigger semantics: the worker reloads on every rising edge.
     choice(PARAM_RELOAD_ID, "Reload IRs", "ir", OFF_ON, 0.0, false),
     // IR transition speed (partitions/frame). 1 = tail-length glide;
@@ -181,7 +177,25 @@ const PARAM_SPECS: &[ParameterSpec] = &[
     // every IR change lets the old room ring out fully while the new one
     // starts fresh (parallel voices, up to 3 ringing per zone).
     choice(PARAM_TAILS_ID, "Tails", "ir", &["Gated", "Ungated"], 0.0, false),
+    // The XY pad: four banks in the corners, Blend X/Y is the ball.
+    // "Folder" watches ~/Music/open-conv/zone{1..4}.wav.
+    choice(PARAM_CORNER_IDS[0], "Pad NW", "pad", BANKS, 1.0, false),
+    choice(PARAM_CORNER_IDS[1], "Pad NE", "pad", BANKS, 0.0, false),
+    choice(PARAM_CORNER_IDS[2], "Pad SW", "pad", BANKS, 2.0, false),
+    choice(PARAM_CORNER_IDS[3], "Pad SE", "pad", BANKS, 3.0, false),
+    continuous(PARAM_BLEND_X_ID, "Blend X", "pad", 0.0, 1.0, 0.0, Format::Percent),
+    continuous(PARAM_BLEND_Y_ID, "Blend Y", "pad", 0.0, 1.0, 0.0, Format::Percent),
+    continuous(PARAM_DAMP_IDS[0], "Zone 1 Damp", "zones", 0.0, 1.0, 0.0, Format::Percent),
+    continuous(PARAM_DAMP_IDS[1], "Zone 2 Damp", "zones", 0.0, 1.0, 0.0, Format::Percent),
+    continuous(PARAM_DAMP_IDS[2], "Zone 3 Damp", "zones", 0.0, 1.0, 0.0, Format::Percent),
+    continuous(PARAM_DAMP_IDS[3], "Zone 4 Damp", "zones", 0.0, 1.0, 0.0, Format::Percent),
+    // Crystalize: slots become harmonic orders 1..4, each with its own
+    // room — clean arithmetic harmonics, no clipping anywhere.
+    choice(PARAM_SHAPER_ID, "Mode", "ir", &["Zones", "Crystalize"], 0.0, false),
+    continuous(PARAM_CRYSTAL_ID, "Crystal Gain", "ir", 1.0, 8.0, 2.0, Format::Ratio),
 ];
+
+const BANKS: &[&str] = &["Rooms", "Subdrop", "Resoroom", "Folder"];
 
 fn param_spec(id: u32) -> PluginResult<&'static ParameterSpec> {
     PARAM_SPECS

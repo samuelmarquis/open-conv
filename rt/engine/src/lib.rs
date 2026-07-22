@@ -41,7 +41,9 @@ use std::sync::Arc;
 
 pub const MAX_ZONES: usize = 4;
 pub const DEFAULT_PARTITION: usize = 256;
-pub const DEFAULT_MAX_IR_SECONDS: f64 = 8.0;
+pub const DEFAULT_MAX_IR_SECONDS: f64 = 5.0;
+/// Blend corners per zone (the XY pad: NW, NE, SW, SE).
+pub const CORNERS: usize = 4;
 const VIZ_CAP: usize = 16;
 const SILENCE_DB: f64 = -160.0;
 
@@ -62,6 +64,19 @@ pub enum TailMode {
     /// input-spectra ring, gated by epoch age — a ringing voice costs
     /// only its adopted spectra + a tail buffer.
     Ungated,
+}
+
+/// What the four branch slots mean.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShaperMode {
+    /// Level zones (the ladder): slot z hears `x · w_z(level)`.
+    Zones,
+    /// Crystalize: slot z hears the clean (z+1)-th power of the input —
+    /// each harmonic order gets its own room. Powers are computed
+    /// arithmetically (no clipping anywhere); each order's input is
+    /// pre-lowpassed at ~0.45·sr/order so generated harmonics stay
+    /// in-band, and even orders are DC-blocked (x² of a sine = DC + 2f).
+    Crystal,
 }
 
 /// How the zone selector reads the input level.
@@ -119,6 +134,21 @@ pub struct EngineParams {
     pub fade_frames: f64,
     /// Old-IR policy on arrival of a new one — see [`TailMode`].
     pub tails: TailMode,
+    /// XY pad position, 0..1 each: bilinear blend over the four corner
+    /// convolvers per zone. Output-gain blending — instant, comb-free,
+    /// automatable at will (no re-render involved).
+    pub blend_x: f64,
+    pub blend_y: f64,
+    /// Per-zone damping 0..1: progressive lowpass along the IR tail
+    /// (0 = untouched, 1 = tail darkens to ~600 Hz). Applied on the
+    /// render path — changes stream in like Size.
+    pub damp: [f64; MAX_ZONES],
+    /// Slot semantics — see [`ShaperMode`].
+    pub shaper: ShaperMode,
+    /// Crystalize harmonic gain g, 1..8: order k branch hears (g·x)ᵏ/g,
+    /// so order 1 is drive-invariant and each higher order gains g per
+    /// step. Only meaningful in [`ShaperMode::Crystal`].
+    pub drive: f64,
     /// Ring-out voices kept per zone in Ungated mode, 1..=RING_SLOTS
     /// (default: max). History depth, not bank size. Not exposed in the
     /// plugin (capacity is the behavior; CPU scales with actual ringing
@@ -144,6 +174,11 @@ impl Default for EngineParams {
             fade_frames: 4.0,
             tails: TailMode::Gated,
             ring: RING_SLOTS as f64,
+            blend_x: 0.0,
+            blend_y: 0.0,
+            damp: [0.0; MAX_ZONES],
+            shaper: ShaperMode::Zones,
+            drive: 2.0,
         }
     }
 }
@@ -178,6 +213,8 @@ pub struct PartitionSet {
     spectra: Vec<Complex<f32>>,
     /// The `size` this set was rendered at.
     rendered_size: f64,
+    /// The `damp` this set was rendered at.
+    rendered_damp: f64,
 }
 
 impl PartitionSet {
@@ -186,6 +223,9 @@ impl PartitionSet {
     }
     pub fn rendered_size(&self) -> f64 {
         self.rendered_size
+    }
+    pub fn rendered_damp(&self) -> f64 {
+        self.rendered_damp
     }
 }
 
@@ -214,9 +254,14 @@ impl IrRenderer {
     }
 
     /// Resample (linear, pitch-coupled stretch, 1/√size energy
-    /// compensation), partition, FFT. `data`: one Vec per IR channel.
-    pub fn render(&self, data: &[Vec<f32>], ir_sr: f64, size: f64) -> PartitionSet {
+    /// compensation), apply progressive damping, partition, FFT.
+    /// `data`: one Vec per IR channel. `damp` 0..1: a one-pole lowpass
+    /// whose cutoff glides log-linearly from 18 kHz at the IR head down
+    /// to `18k·(600/18k)^damp` at the tail — real-absorption behavior
+    /// (the tail darkens progressively), not a static EQ.
+    pub fn render(&self, data: &[Vec<f32>], ir_sr: f64, size: f64, damp: f64) -> PartitionSet {
         let size = size.clamp(0.25, 4.0);
+        let damp = damp.clamp(0.0, 1.0);
         let ratio = (self.sr / ir_sr) * size;
         let ch = data.len();
         let src_len = data[0].len();
@@ -231,8 +276,41 @@ impl IrRenderer {
         let mut scratch = fft.make_scratch_vec();
         let mut spectra = vec![Complex::new(0.0f32, 0.0); ch * k * bins];
         let mut time = vec![0.0f32; 2 * self.part];
+        let mut resampled = vec![0.0f32; out_len];
+        let end_cut = 18000.0 * (600.0f64 / 18000.0).powf(damp);
         for c in 0..ch {
             let d = &data[c];
+            for (n, r) in resampled.iter_mut().enumerate() {
+                let pos = n as f64 / ratio;
+                let i0 = pos as usize;
+                *r = if i0 + 1 < src_len {
+                    let f = (pos - i0 as f64) as f32;
+                    (d[i0] * (1.0 - f) + d[i0 + 1] * f) * norm as f32
+                } else if i0 < src_len {
+                    d[i0] * norm as f32
+                } else {
+                    0.0
+                };
+            }
+            if damp > 1e-3 {
+                // Two cascaded one-poles (−12 dB/oct) — real-absorption
+                // steepness; cutoff glides log-linearly along the tail.
+                let mut lp1 = 0.0f32;
+                let mut lp2 = 0.0f32;
+                let inv_len = 1.0 / out_len as f64;
+                for (n, r) in resampled.iter_mut().enumerate() {
+                    // Reach the target cutoff by 40% through the tail —
+                    // heads stay bright (IR identity), tails go properly
+                    // dark (a Damp knob must be *audible*).
+                    let t = (n as f64 * inv_len * 2.5).min(1.0);
+                    let cut = 18000.0 * (end_cut / 18000.0).powf(t);
+                    let alpha =
+                        (1.0 - (-2.0 * std::f64::consts::PI * cut / self.sr).exp()) as f32;
+                    lp1 += alpha * (*r - lp1);
+                    lp2 += alpha * (lp1 - lp2);
+                    *r = lp2;
+                }
+            }
             for part in 0..k {
                 time.fill(0.0);
                 for i in 0..self.part {
@@ -240,14 +318,7 @@ impl IrRenderer {
                     if n >= out_len {
                         break;
                     }
-                    let pos = n as f64 / ratio;
-                    let i0 = pos as usize;
-                    if i0 + 1 < src_len {
-                        let f = (pos - i0 as f64) as f32;
-                        time[i] = (d[i0] * (1.0 - f) + d[i0 + 1] * f) * norm as f32;
-                    } else if i0 < src_len {
-                        time[i] = d[i0] * norm as f32;
-                    }
+                    time[i] = resampled[n];
                 }
                 let out = &mut spectra[(c * k + part) * bins..][..bins];
                 fft.process_with_scratch(&mut time, out, &mut scratch)
@@ -260,6 +331,7 @@ impl IrRenderer {
             bins,
             spectra,
             rendered_size: size,
+            rendered_damp: damp,
         }
     }
 }
@@ -316,6 +388,17 @@ struct LayerVoice {
     tail: Vec<Vec<f32>>,
 }
 
+/// One zone's shared input analysis: all four corner convolvers (and all
+/// their epoch voices) read this ring — the corner blend is output-gain
+/// only, so the input FFT happens once per zone per channel.
+struct InputRing {
+    /// `[ch][max_parts * bins]` of past shaped-input spectra.
+    x_ring: Vec<Vec<Complex<f32>>>,
+    /// Ring slot holding the most recent frame's spectrum.
+    head: usize,
+}
+
+/// One corner convolver of one zone (a zone has [`CORNERS`] of these).
 struct Branch {
     /// Active IR spectra: `[ch][max_parts * bins]`, zero beyond
     /// `active_k` (invariant relied on during swaps that grow k).
@@ -323,12 +406,11 @@ struct Branch {
     active_k: usize,
     /// Which source-IR channel feeds engine channel c: `min(c, ir_ch-1)`.
     ir_ch: usize,
-    /// Rendered-size bookkeeping for `service`.
+    /// Rendered-size/damp bookkeeping for `service`.
     rendered_size: f64,
-    /// Ring of past shaped-input spectra: `[ch][max_parts * bins]`.
-    x_ring: Vec<Vec<Complex<f32>>>,
-    /// Ring slot holding the most recent frame's spectrum.
-    head: usize,
+    rendered_damp: f64,
+    /// Weight-gated last frame (tails zeroed on skip entry).
+    skipped: bool,
     /// Overlap-add tail, `[ch][P]`.
     tail: Vec<Vec<f32>>,
     pending: Option<Pending>,
@@ -434,8 +516,18 @@ pub struct Engine {
     ifft: Arc<dyn ComplexToReal<f32>>,
     fft_scratch: Vec<Complex<f32>>,
     ifft_scratch: Vec<Complex<f32>>,
+    /// Corner convolvers, zone-major: index = zone * CORNERS + corner.
     branches: Vec<Branch>,
+    /// One shared input ring per zone.
+    rings: Vec<InputRing>,
+    /// Source IRs, same zone-major indexing as `branches`.
     sources: Vec<Option<SourceIr>>,
+    /// Previous frame's corner blend weights (in-frame ramping).
+    prev_w: [f32; CORNERS],
+    /// Crystalize filter states: `[zone][ch][stage]` lowpass cascade and
+    /// `[zone][ch][x1,y1]` DC blocker.
+    crystal_lp: [[[f32; 2]; 2]; MAX_ZONES],
+    crystal_hp: [[[f32; 2]; 2]; MAX_ZONES],
     /// Input accumulator, `[ch][P]`.
     in_fifo: Vec<Vec<f32>>,
     fifo_fill: usize,
@@ -472,14 +564,14 @@ impl Engine {
         let fft_scratch = fft.make_scratch_vec();
         let ifft_scratch = ifft.make_scratch_vec();
         let zero_spec = vec![Complex::new(0.0f32, 0.0); max_parts * bins];
-        let branches = (0..MAX_ZONES)
+        let branches = (0..MAX_ZONES * CORNERS)
             .map(|_| Branch {
                 h: vec![zero_spec.clone(); channels],
                 active_k: 0,
                 ir_ch: 1,
                 rendered_size: 1.0,
-                x_ring: vec![zero_spec.clone(); channels],
-                head: 0,
+                rendered_damp: 0.0,
+                skipped: false,
                 tail: vec![vec![0.0; partition]; channels],
                 pending: None,
                 live: None,
@@ -492,6 +584,12 @@ impl Engine {
                     p
                 },
                 retired: std::array::from_fn(|_| None),
+            })
+            .collect();
+        let rings = (0..MAX_ZONES)
+            .map(|_| InputRing {
+                x_ring: vec![zero_spec.clone(); channels],
+                head: 0,
             })
             .collect();
         let mut out_fifo = vec![VecDeque::with_capacity(2 * partition + 1); channels];
@@ -511,7 +609,11 @@ impl Engine {
             fft_scratch,
             ifft_scratch,
             branches,
-            sources: (0..MAX_ZONES).map(|_| None).collect(),
+            rings,
+            sources: (0..MAX_ZONES * CORNERS).map(|_| None).collect(),
+            prev_w: [1.0, 0.0, 0.0, 0.0],
+            crystal_lp: [[[0.0; 2]; 2]; MAX_ZONES],
+            crystal_hp: [[[0.0; 2]; 2]; MAX_ZONES],
             in_fifo: vec![vec![0.0; partition]; channels],
             fifo_fill: 0,
             out_fifo,
@@ -534,7 +636,7 @@ impl Engine {
         self.part
     }
 
-    /// Longest active tail in samples (max over zones of active_k · P).
+    /// Longest active tail in samples (max over all corner convolvers).
     pub fn tail_samples(&self) -> usize {
         self.branches
             .iter()
@@ -556,7 +658,6 @@ impl Engine {
         let channels = self.channels;
         let bins = self.bins;
         for b in &mut self.branches {
-            // Fast-forward pending swap.
             if let Some(p) = b.pending.take() {
                 let k_new = p.set.as_ref().map(|s| s.k).unwrap_or(0);
                 for c in 0..channels {
@@ -578,6 +679,7 @@ impl Engine {
                 b.active_k = k_new;
                 if let Some(s) = p.set {
                     b.rendered_size = s.rendered_size;
+                    b.rendered_damp = s.rendered_damp;
                     b.retire_push(s);
                 }
             }
@@ -593,10 +695,15 @@ impl Engine {
                 }
             }
             for c in 0..channels {
-                b.x_ring[c].fill(Complex::new(0.0, 0.0));
                 b.tail[c].fill(0.0);
             }
-            b.head = 0;
+            b.skipped = false;
+        }
+        for r in &mut self.rings {
+            for c in 0..channels {
+                r.x_ring[c].fill(Complex::new(0.0, 0.0));
+            }
+            r.head = 0;
         }
         for f in &mut self.in_fifo {
             f.fill(0.0);
@@ -610,6 +717,9 @@ impl Engine {
         }
         self.env = 0.0;
         self.t = 0;
+        self.prev_w = [1.0, 0.0, 0.0, 0.0];
+        self.crystal_lp = [[[0.0; 2]; 2]; MAX_ZONES];
+        self.crystal_hp = [[[0.0; 2]; 2]; MAX_ZONES];
         self.viz.clear();
     }
 
@@ -621,19 +731,35 @@ impl Engine {
     // Control path (allocates; never call from the audio thread)
     // ---------------------------------------------------------------
 
-    /// Load/replace the source IR for a zone. `data`: one Vec per IR
-    /// channel (mono broadcasts). Renders at `size` and either installs
-    /// immediately (branch was empty) or streams via partition replacement.
+    /// Load/replace the source IR for a zone's NW corner (corner 0) —
+    /// the single-bank compatibility path.
     pub fn set_source_ir(&mut self, zone: usize, data: Vec<Vec<f32>>, ir_sr: f64, size: f64) {
-        assert!(zone < MAX_ZONES);
+        self.set_source_ir_at(zone, 0, data, ir_sr, size);
+    }
+
+    /// Load/replace the source IR for one (zone, corner). `data`: one Vec
+    /// per IR channel (mono broadcasts). Renders at `size` (damp 0 — the
+    /// next `service` re-renders if params want damping) and either
+    /// installs immediately (corner was empty) or streams via partition
+    /// replacement.
+    pub fn set_source_ir_at(
+        &mut self,
+        zone: usize,
+        corner: usize,
+        data: Vec<Vec<f32>>,
+        ir_sr: f64,
+        size: f64,
+    ) {
+        assert!(zone < MAX_ZONES && corner < CORNERS);
         assert!(!data.is_empty() && !data[0].is_empty());
         let src = SourceIr { data, sr: ir_sr };
-        let set = self.render_partition_set(&src, size);
-        self.sources[zone] = Some(src);
-        let b = &mut self.branches[zone];
+        let set = self.renderer().render(&src.data, src.sr, size, 0.0);
+        let bi = zone * CORNERS + corner;
+        self.sources[bi] = Some(src);
+        let b = &mut self.branches[bi];
         b.ir_ch = set.ch;
         if b.active_k == 0 && b.pending.is_none() {
-            // Fresh branch: direct install.
+            // Fresh corner: direct install.
             let bins = self.bins;
             for c in 0..self.channels {
                 let src_c = c.min(set.ch - 1);
@@ -644,18 +770,20 @@ impl Engine {
             }
             b.active_k = set.k;
             b.rendered_size = set.rendered_size;
+            b.rendered_damp = set.rendered_damp;
         } else {
             // Control path: rejected/retired sets all drop here. Loads
             // always stream via the Gated path (creative tail modes apply
             // to *changes*, not first installs).
-            if let Err(set) = self.queue_partition_set(zone, set, &EngineParams::default()) {
+            if let Err(set) = self.queue_partition_set(zone, corner, set, &EngineParams::default())
+            {
                 drop(set);
             }
             while self.take_retired(zone).is_some() {}
         }
     }
 
-    /// Honor control-path consequences of `params` (currently: `size`
+    /// Honor control-path consequences of `params` (size/damp
     /// retargeting). Cheap when nothing changed. Call between blocks from
     /// the CLI, or from a worker thread in a plugin shell.
     pub fn service(&mut self, p: &EngineParams) {
@@ -663,28 +791,35 @@ impl Engine {
         let ungated = p.tails == TailMode::Ungated;
         for zone in 0..MAX_ZONES {
             while self.take_retired(zone).is_some() {}
-            let needs = {
-                let b = &self.branches[zone];
-                let current = if ungated {
-                    // New epoch per retarget; age-gate (~100 ms) bounds
-                    // voice churn during offline sweeps.
-                    b.live
-                        .as_ref()
-                        .filter(|v| v.age > 19)
-                        .map(|v| v.set.rendered_size)
-                        .or((b.pending.is_none() && b.active_k > 0)
-                            .then_some(b.rendered_size))
-                } else {
-                    (b.pending.is_none() && b.active_k > 0).then_some(b.rendered_size)
+            let damp = p.damp[zone].clamp(0.0, 1.0);
+            for corner in 0..CORNERS {
+                let bi = zone * CORNERS + corner;
+                let needs = {
+                    let b = &self.branches[bi];
+                    let current = if ungated {
+                        // New epoch per retarget; age-gate (~100 ms) bounds
+                        // voice churn during offline sweeps.
+                        b.live
+                            .as_ref()
+                            .filter(|v| v.age > 19)
+                            .map(|v| (v.set.rendered_size, v.set.rendered_damp))
+                            .or((b.pending.is_none() && b.active_k > 0)
+                                .then_some((b.rendered_size, b.rendered_damp)))
+                    } else {
+                        (b.pending.is_none() && b.active_k > 0)
+                            .then_some((b.rendered_size, b.rendered_damp))
+                    };
+                    self.sources[bi].is_some()
+                        && current.is_some_and(|(cs, cd)| {
+                            (cs - size).abs() > 1e-3 || (cd - damp).abs() > 1e-3
+                        })
                 };
-                self.sources[zone].is_some()
-                    && current.is_some_and(|cs| (cs - size).abs() > 1e-3)
-            };
-            if needs {
-                let src = self.sources[zone].take().unwrap();
-                let set = self.render_partition_set(&src, size);
-                self.sources[zone] = Some(src);
-                let _ = self.queue_partition_set(zone, set, p);
+                if needs {
+                    let src = self.sources[bi].take().unwrap();
+                    let set = self.renderer().render(&src.data, src.sr, size, damp);
+                    self.sources[bi] = Some(src);
+                    let _ = self.queue_partition_set(zone, corner, set, p);
+                }
             }
         }
     }
@@ -701,54 +836,51 @@ impl Engine {
         }
     }
 
-    fn render_partition_set(&self, src: &SourceIr, size: f64) -> PartitionSet {
-        self.renderer().render(&src.data, src.sr, size)
-    }
-
     /// Take one spent set for off-thread dropping (call until `None`).
+    /// Drains across all four of the zone's corner convolvers.
     pub fn take_retired(&mut self, zone: usize) -> Option<PartitionSet> {
-        self.branches[zone]
-            .retired
-            .iter_mut()
-            .find_map(|slot| slot.take())
+        for corner in 0..CORNERS {
+            let b = &mut self.branches[zone * CORNERS + corner];
+            if let Some(set) = b.retired.iter_mut().find_map(|slot| slot.take()) {
+                return Some(set);
+            }
+        }
+        None
     }
 
     // ---------------------------------------------------------------
     // RT-safe handoff
     // ---------------------------------------------------------------
 
-    /// Hand a rendered IR to a zone. Move-only, no allocation; spent sets
-    /// (displaced pendings, evicted/finished ring voices, completed swaps)
-    /// park in the retired queue — drain [`Engine::take_retired`] until
-    /// `None` from the control side. `Err(set)` only for geometry
-    /// mismatches.
+    /// Hand a rendered IR to one (zone, corner). Move-only, no
+    /// allocation; spent sets (displaced pendings, evicted/finished ring
+    /// voices, completed swaps) park in the retired queues — drain
+    /// [`Engine::take_retired`] until `None` from the control side.
+    /// `Err(set)` only for geometry mismatches.
     ///
-    /// `ungated == false` ([`TailMode::Gated`]): B&S streaming replacement
-    /// into the shared H bank; an in-flight swap is displaced (cursor
-    /// restarts — latest wins).
-    ///
-    /// `ungated == true` ([`TailMode::Ungated`]): the current live voice
-    /// freezes and rings out; `set` becomes a fresh input-epoch voice
-    /// effective immediately. If the H-bank voice is audible (bootstrap
-    /// from Gated mode), it is streamed out to silence via the normal
-    /// fade machinery.
+    /// [`TailMode::Gated`]: B&S streaming replacement into the corner's H
+    /// bank; an in-flight swap is displaced (cursor restarts — latest
+    /// wins). [`TailMode::Ungated`]: the corner's live voice freezes and
+    /// rings out; `set` becomes a fresh input-epoch voice effective
+    /// immediately (the H voice, if audible, streams out to silence).
     pub fn queue_partition_set(
         &mut self,
         zone: usize,
+        corner: usize,
         set: PartitionSet,
         p: &EngineParams,
     ) -> Result<(), PartitionSet> {
         let ungated = p.tails == TailMode::Ungated;
         let ring_cap = (p.ring.round() as usize).clamp(1, RING_SLOTS);
-        let b = &mut self.branches[zone];
+        let b = &mut self.branches[zone * CORNERS + corner.min(CORNERS - 1)];
         if set.bins != self.bins || set.k > self.max_parts || set.ch == 0 {
             return Err(set);
         }
         b.ir_ch = set.ch;
         if ungated {
             // Displace any H-bank stream; fade the H voice to silence.
-            if let Some(p) = b.pending.take() {
-                if let Some(s) = p.set {
+            if let Some(pd) = b.pending.take() {
+                if let Some(s) = pd.set {
                     b.retire_push(s);
                 }
             }
@@ -779,8 +911,8 @@ impl Engine {
         } else {
             // A live epoch voice rings out rather than vanishing.
             b.freeze_live(ring_cap);
-            if let Some(p) = b.pending.take() {
-                if let Some(s) = p.set {
+            if let Some(pd) = b.pending.take() {
+                if let Some(s) = pd.set {
                     b.retire_push(s);
                 }
             }
@@ -828,58 +960,116 @@ impl Engine {
         let att = time_coeff(p.attack_ms, self.sr);
         let rel = time_coeff(p.release_ms, self.sr);
 
-        // --- level detection & branch input shaping -------------------
-        let mut w = [0.0f32; MAX_ZONES];
+        // --- input shaping (fills self.shaped per zone) ----------------
         let mut w_acc = [0.0f32; MAX_ZONES];
         let mut peak = 0.0f32;
-        for i in 0..part {
-            let mut frame_peak = 0.0f32;
-            for c in 0..channels {
-                frame_peak = frame_peak.max(self.in_fifo[c][i].abs());
-            }
-            peak = peak.max(frame_peak);
-            let fp = frame_peak as f64;
-            self.env = if fp > self.env {
-                att * self.env + (1.0 - att) * fp
-            } else {
-                rel * self.env + (1.0 - rel) * fp
-            };
-            let sym = p.sym.clamp(0.0, 1.0) as f32;
-            match p.level_mode {
-                LevelMode::Envelope => {
-                    zone_weights(db(self.env), p, n_zones, &mut w);
+        match p.shaper {
+            ShaperMode::Zones => {
+                let mut w = [0.0f32; MAX_ZONES];
+                let sym = p.sym.clamp(0.0, 1.0) as f32;
+                for i in 0..part {
+                    let mut frame_peak = 0.0f32;
                     for c in 0..channels {
-                        let x = self.in_fifo[c][i];
-                        let mut we = w;
-                        if sym > 0.0 && x < 0.0 {
-                            mirror_weights(&mut we, n_zones, sym);
-                        }
-                        if c == 0 {
-                            for z in 0..n_zones {
-                                w_acc[z] += we[z];
+                        frame_peak = frame_peak.max(self.in_fifo[c][i].abs());
+                    }
+                    peak = peak.max(frame_peak);
+                    let fp = frame_peak as f64;
+                    self.env = if fp > self.env {
+                        att * self.env + (1.0 - att) * fp
+                    } else {
+                        rel * self.env + (1.0 - rel) * fp
+                    };
+                    match p.level_mode {
+                        LevelMode::Envelope => {
+                            zone_weights(db(self.env), p, n_zones, &mut w);
+                            for c in 0..channels {
+                                let x = self.in_fifo[c][i];
+                                let mut we = w;
+                                if sym > 0.0 && x < 0.0 {
+                                    mirror_weights(&mut we, n_zones, sym);
+                                }
+                                if c == 0 {
+                                    for z in 0..n_zones {
+                                        w_acc[z] += we[z];
+                                    }
+                                }
+                                for z in 0..n_zones {
+                                    self.shaped[z][c][i] = x * we[z];
+                                }
                             }
                         }
-                        for z in 0..n_zones {
-                            self.shaped[z][c][i] = x * we[z];
+                        LevelMode::Instant => {
+                            for c in 0..channels {
+                                let x = self.in_fifo[c][i];
+                                zone_weights(db(x.abs() as f64), p, n_zones, &mut w);
+                                if sym > 0.0 && x < 0.0 {
+                                    mirror_weights(&mut w, n_zones, sym);
+                                }
+                                if c == 0 {
+                                    for z in 0..n_zones {
+                                        w_acc[z] += w[z];
+                                    }
+                                }
+                                for z in 0..n_zones {
+                                    self.shaped[z][c][i] = x * w[z];
+                                }
+                            }
                         }
                     }
                 }
-                LevelMode::Instant => {
+            }
+            ShaperMode::Crystal => {
+                // env/peak still tracked (viz + mode-switch continuity)
+                for i in 0..part {
+                    let mut fp = 0.0f32;
                     for c in 0..channels {
-                        let x = self.in_fifo[c][i];
-                        zone_weights(db(x.abs() as f64), p, n_zones, &mut w);
-                        if sym > 0.0 && x < 0.0 {
-                            mirror_weights(&mut w, n_zones, sym);
-                        }
-                        if c == 0 {
-                            for z in 0..n_zones {
-                                w_acc[z] += w[z];
-                            }
-                        }
-                        for z in 0..n_zones {
-                            self.shaped[z][c][i] = x * w[z];
-                        }
+                        fp = fp.max(self.in_fifo[c][i].abs());
                     }
+                    peak = peak.max(fp);
+                    let fpd = fp as f64;
+                    self.env = if fpd > self.env {
+                        att * self.env + (1.0 - att) * fpd
+                    } else {
+                        rel * self.env + (1.0 - rel) * fpd
+                    };
+                }
+                let g = p.drive.clamp(1.0, 8.0) as f32;
+                for z in 0..n_zones {
+                    let order = (z + 1) as i32;
+                    // pre-LP keeps generated harmonics in-band (clean law)
+                    let cut = 0.45 * self.sr / order as f64;
+                    let alpha =
+                        (1.0 - (-2.0 * std::f64::consts::PI * cut / self.sr).exp()) as f32;
+                    let even = order % 2 == 0;
+                    for c in 0..channels {
+                        let mut lp1 = self.crystal_lp[z][c][0];
+                        let mut lp2 = self.crystal_lp[z][c][1];
+                        let mut hx = self.crystal_hp[z][c][0];
+                        let mut hy = self.crystal_hp[z][c][1];
+                        for i in 0..part {
+                            let x = self.in_fifo[c][i];
+                            lp1 += alpha * (x - lp1);
+                            lp2 += alpha * (lp1 - lp2);
+                            let mut v = if order == 1 {
+                                x
+                            } else {
+                                (g * lp2).powi(order) / g
+                            };
+                            if even {
+                                // DC-block: x^even of a sine carries DC
+                                let y = v - hx + 0.995 * hy;
+                                hx = v;
+                                hy = y;
+                                v = y;
+                            }
+                            self.shaped[z][c][i] = v;
+                        }
+                        self.crystal_lp[z][c][0] = lp1;
+                        self.crystal_lp[z][c][1] = lp2;
+                        self.crystal_hp[z][c][0] = hx;
+                        self.crystal_hp[z][c][1] = hy;
+                    }
+                    w_acc[z] = part as f32; // viz: all orders live
                 }
             }
         }
@@ -889,22 +1079,33 @@ impl Engine {
             }
         }
 
-        // --- branch convolutions --------------------------------------
+        // --- corner blend weights (bilinear XY, in-frame ramped) -------
+        let bx = p.blend_x.clamp(0.0, 1.0) as f32;
+        let by = p.blend_y.clamp(0.0, 1.0) as f32;
+        let w_now = [
+            (1.0 - bx) * (1.0 - by),
+            bx * (1.0 - by),
+            (1.0 - bx) * by,
+            bx * by,
+        ];
+        let w_prev = self.prev_w;
+        self.prev_w = w_now;
+        const W_EPS: f32 = 1e-4;
+
         for c in 0..channels {
             self.wet[c].fill(0.0);
         }
         let mut zone_energy = [0.0f32; MAX_ZONES];
         let mut swap_progress = 1.0f32;
         for z in 0..MAX_ZONES {
-            let (active, has_pending, has_voices) = {
-                let b = &self.branches[z];
-                (
-                    b.active_k > 0,
-                    b.pending.is_some(),
-                    b.live.is_some() || b.ringing.iter().any(|r| r.is_some()),
-                )
-            };
-            if !active && !has_pending && !has_voices {
+            let any_state = (0..CORNERS).any(|ci| {
+                let b = &self.branches[z * CORNERS + ci];
+                b.active_k > 0
+                    || b.pending.is_some()
+                    || b.live.is_some()
+                    || b.ringing.iter().any(|r| r.is_some())
+            });
+            if !any_state {
                 continue;
             }
             let zg = if z < n_zones {
@@ -913,167 +1114,132 @@ impl Engine {
                 0.0
             };
 
-            // Advance the streaming swap by `morph` partitions (B&S cursor,
-            // rate-scaled). Each written partition fades to target over
-            // WRITE_STAGES frames (¼→½→¾→1 via the in-place recurrence
-            // h += (T−h)/(STAGES+1−s)) — the skitter softener. A completed
-            // swap retires only when the caller has drained the previous
-            // retired set (no RT drops).
-            {
-                let bins = self.bins;
-                let steps = (p.morph.round() as usize).clamp(1, 16);
-                let fade = (p.fade_frames.round() as usize).clamp(1, MAX_FADE);
-                let b = &mut self.branches[z];
-                let mut done = false;
-                if let Some(pend) = &mut b.pending {
-                    let k_new = pend.set.as_ref().map(|s| s.k).unwrap_or(0);
-                    for s in (1..=MAX_FADE).rev() {
-                        pend.hist[s] = pend.hist[s - 1];
-                    }
-                    pend.cursor = (pend.cursor + steps).min(pend.eff_k);
-                    pend.hist[0] = pend.cursor;
-                    for s in 1..=MAX_FADE {
-                        let lo = pend.hist[s];
-                        let hi = pend.hist[s - 1];
-                        if lo >= hi {
-                            continue;
+            // Ring advance + one shaped-input FFT per channel (shared by
+            // all corners and their voices).
+            let head = {
+                let r = &mut self.rings[z];
+                r.head = (r.head + 1) % self.max_parts;
+                r.head
+            };
+            for c in 0..channels {
+                self.time_buf[..part].copy_from_slice(&self.shaped[z][c]);
+                self.time_buf[part..].fill(0.0);
+                let r = &mut self.rings[z];
+                let slot = &mut r.x_ring[c][head * self.bins..(head + 1) * self.bins];
+                self.fft
+                    .process_with_scratch(&mut self.time_buf, slot, &mut self.fft_scratch)
+                    .expect("fft");
+            }
+
+            for ci in 0..CORNERS {
+                let bi = z * CORNERS + ci;
+
+                // Streaming-swap advance (bookkeeping — runs even when the
+                // corner is weight-gated silent). Each written partition
+                // fades over `fade` frames; completed swaps retire.
+                {
+                    let bins = self.bins;
+                    let steps = (p.morph.round() as usize).clamp(1, 16);
+                    let fade = (p.fade_frames.round() as usize).clamp(1, MAX_FADE);
+                    let b = &mut self.branches[bi];
+                    let mut done = false;
+                    if let Some(pend) = &mut b.pending {
+                        let k_new = pend.set.as_ref().map(|s| s.k).unwrap_or(0);
+                        for st in (1..=MAX_FADE).rev() {
+                            pend.hist[st] = pend.hist[st - 1];
                         }
-                        // Stage factor lifts the lerp chain k/fade; stages
-                        // at/past `fade` finalize exactly (also covers a
-                        // fade decrease mid-stream).
-                        let f = if s >= fade {
-                            1.0f32
-                        } else {
-                            1.0 / (fade + 1 - s) as f32
-                        };
-                        for part_i in lo..hi {
-                            for c in 0..channels {
-                                let dst = &mut b.h[c][part_i * bins..(part_i + 1) * bins];
-                                if part_i < k_new {
-                                    let set = pend.set.as_ref().unwrap();
-                                    let src_c = c.min(set.ch - 1);
-                                    let t =
-                                        &set.spectra[(src_c * k_new + part_i) * bins..][..bins];
-                                    if f >= 1.0 {
-                                        dst.copy_from_slice(t);
-                                    } else {
-                                        for (d, &tv) in dst.iter_mut().zip(t) {
-                                            *d += (tv - *d) * f;
+                        pend.cursor = (pend.cursor + steps).min(pend.eff_k);
+                        pend.hist[0] = pend.cursor;
+                        for st in 1..=MAX_FADE {
+                            let lo = pend.hist[st];
+                            let hi = pend.hist[st - 1];
+                            if lo >= hi {
+                                continue;
+                            }
+                            let f = if st >= fade {
+                                1.0f32
+                            } else {
+                                1.0 / (fade + 1 - st) as f32
+                            };
+                            for part_i in lo..hi {
+                                for c in 0..channels {
+                                    let dst =
+                                        &mut b.h[c][part_i * bins..(part_i + 1) * bins];
+                                    if part_i < k_new {
+                                        let set = pend.set.as_ref().unwrap();
+                                        let src_c = c.min(set.ch - 1);
+                                        let t = &set.spectra
+                                            [(src_c * k_new + part_i) * bins..][..bins];
+                                        if f >= 1.0 {
+                                            dst.copy_from_slice(t);
+                                        } else {
+                                            for (d, &tv) in dst.iter_mut().zip(t) {
+                                                *d += (tv - *d) * f;
+                                            }
                                         }
-                                    }
-                                } else if f >= 1.0 {
-                                    dst.fill(Complex::new(0.0, 0.0));
-                                } else {
-                                    for d in dst.iter_mut() {
-                                        *d -= *d * f; // fade out (unload)
+                                    } else if f >= 1.0 {
+                                        dst.fill(Complex::new(0.0, 0.0));
+                                    } else {
+                                        for d in dst.iter_mut() {
+                                            *d -= *d * f;
+                                        }
                                     }
                                 }
                             }
                         }
+                        if pend.cursor >= pend.eff_k && pend.hist[MAX_FADE] >= pend.eff_k {
+                            done = true;
+                        }
+                        swap_progress = swap_progress.min(b.swap_progress());
                     }
-                    if pend.cursor >= pend.eff_k && pend.hist[MAX_FADE] >= pend.eff_k {
-                        done = true;
-                    }
-                    swap_progress = swap_progress.min(b.swap_progress());
-                }
-                if done {
-                    let pend = b.pending.take().unwrap();
-                    b.active_k = pend.set.as_ref().map(|s| s.k).unwrap_or(0);
-                    if let Some(s) = pend.set {
-                        b.rendered_size = s.rendered_size;
-                        b.retire_push(s);
-                    }
-                }
-            }
-
-            let (head, active_k) = {
-                let b = &mut self.branches[z];
-                b.head = (b.head + 1) % self.max_parts;
-                (b.head, b.active_k)
-            };
-            for c in 0..channels {
-                // FFT of the shaped input block into the ring.
-                self.time_buf[..part].copy_from_slice(&self.shaped[z][c]);
-                self.time_buf[part..].fill(0.0);
-                {
-                    let b = &mut self.branches[z];
-                    let slot = &mut b.x_ring[c][head * self.bins..(head + 1) * self.bins];
-                    self.fft
-                        .process_with_scratch(&mut self.time_buf, slot, &mut self.fft_scratch)
-                        .expect("fft");
-                }
-                // Frequency-domain delay line accumulation.
-                self.acc_buf.fill(Complex::new(0.0, 0.0));
-                {
-                    let b = &self.branches[z];
-                    for kp in 0..active_k {
-                        let slot = (head + self.max_parts - kp) % self.max_parts;
-                        let x = &b.x_ring[c][slot * self.bins..(slot + 1) * self.bins];
-                        let h = &b.h[c][kp * self.bins..(kp + 1) * self.bins];
-                        for ((a, &xv), &hv) in self.acc_buf.iter_mut().zip(x).zip(h) {
-                            *a += xv * hv;
+                    if done {
+                        let pend = b.pending.take().unwrap();
+                        b.active_k = pend.set.as_ref().map(|s| s.k).unwrap_or(0);
+                        if let Some(set) = pend.set {
+                            b.rendered_size = set.rendered_size;
+                            b.rendered_damp = set.rendered_damp;
+                            b.retire_push(set);
                         }
                     }
                 }
-                // Back to time; overlap-add.
-                self.acc_buf[0].im = 0.0;
-                self.acc_buf[self.bins - 1].im = 0.0;
-                self.ifft
-                    .process_with_scratch(
-                        &mut self.acc_buf,
-                        &mut self.out_time,
-                        &mut self.ifft_scratch,
-                    )
-                    .expect("ifft");
-                let scale = 1.0 / (2 * part) as f32;
-                let b = &mut self.branches[z];
-                let mut e = 0.0f32;
-                for i in 0..part {
-                    let s = self.out_time[i] * scale + b.tail[c][i];
-                    b.tail[c][i] = self.out_time[part + i] * scale;
-                    self.wet[c][i] += s * zg;
-                    e += s * s;
-                }
-                if c == 0 {
-                    zone_energy[z] = (e / part as f32).sqrt();
-                }
 
-                // --- epoch voices (Ungated): share this branch's x_ring,
-                //     gated by age. vi 0 = live, 1..= frozen ring-outs.
-                for vi in 0..=RING_SLOTS {
-                    let range = {
-                        let b = &self.branches[z];
-                        let v = if vi == 0 {
-                            b.live.as_ref()
-                        } else {
-                            b.ringing[vi - 1].as_ref()
-                        };
-                        v.map(|v| {
-                            let k = v.set.k;
-                            if vi == 0 {
-                                (0usize, k.min(v.age + 1)) // live: lags 0..=age
-                            } else {
-                                // frozen: its own epoch's input only
-                                (v.age.min(k), k.min(v.age + v.epoch_len))
+                let active_k = self.branches[bi].active_k;
+                let g0w = w_prev[ci];
+                let g1w = w_now[ci];
+                if g0w <= W_EPS && g1w <= W_EPS {
+                    // Weight-gated silent: skip all output compute; zero
+                    // tails once so re-entry carries no stale remainder.
+                    let b = &mut self.branches[bi];
+                    if !b.skipped {
+                        b.skipped = true;
+                        for c in 0..channels {
+                            b.tail[c].fill(0.0);
+                        }
+                        if let Some(v) = &mut b.live {
+                            for c in 0..channels {
+                                v.tail[c].fill(0.0);
                             }
-                        })
-                    };
-                    let Some((lo, hi)) = range else { continue };
-                    if lo < hi {
+                        }
+                        for rv in b.ringing.iter_mut().flatten() {
+                            for c in 0..channels {
+                                rv.tail[c].fill(0.0);
+                            }
+                        }
+                    }
+                } else {
+                    self.branches[bi].skipped = false;
+                    let scale = 1.0 / (2 * part) as f32;
+                    let wstep = (g1w - g0w) / part as f32;
+                    for c in 0..channels {
+                        // H-bank convolution against the shared ring.
                         self.acc_buf.fill(Complex::new(0.0, 0.0));
                         {
-                            let b = &self.branches[z];
-                            let v = if vi == 0 {
-                                b.live.as_ref().unwrap()
-                            } else {
-                                b.ringing[vi - 1].as_ref().unwrap()
-                            };
-                            let k = v.set.k;
-                            let src_c = c.min(v.set.ch - 1);
-                            for j in lo..hi {
-                                let slot = (head + self.max_parts - j) % self.max_parts;
-                                let x = &b.x_ring[c][slot * self.bins..(slot + 1) * self.bins];
-                                let h = &v.set.spectra[(src_c * k + j) * self.bins..][..self.bins];
+                            let b = &self.branches[bi];
+                            let r = &self.rings[z];
+                            for kp in 0..active_k {
+                                let slot = (head + self.max_parts - kp) % self.max_parts;
+                                let x = &r.x_ring[c][slot * self.bins..(slot + 1) * self.bins];
+                                let h = &b.h[c][kp * self.bins..(kp + 1) * self.bins];
                                 for ((a, &xv), &hv) in self.acc_buf.iter_mut().zip(x).zip(h) {
                                     *a += xv * hv;
                                 }
@@ -1088,65 +1254,140 @@ impl Engine {
                                 &mut self.ifft_scratch,
                             )
                             .expect("ifft");
-                        let b = &mut self.branches[z];
-                        let v = if vi == 0 {
-                            b.live.as_mut().unwrap()
-                        } else {
-                            b.ringing[vi - 1].as_mut().unwrap()
-                        };
-                        // Dying voices ramp IN-frame (a per-frame gain
-                        // step is itself a staircase of clicklets).
-                        let g0 = zg * v.gain;
-                        let g1 = if v.dying { g0 * 0.5 } else { g0 };
-                        let gstep = (g1 - g0) / part as f32;
-                        for i in 0..part {
-                            let s = self.out_time[i] * scale + v.tail[c][i];
-                            v.tail[c][i] = self.out_time[part + i] * scale;
-                            self.wet[c][i] += s * (g0 + gstep * (i as f32 + 1.0));
+                        {
+                            let b = &mut self.branches[bi];
+                            let mut e = 0.0f32;
+                            for i in 0..part {
+                                let sv = self.out_time[i] * scale + b.tail[c][i];
+                                b.tail[c][i] = self.out_time[part + i] * scale;
+                                let gw = g0w + wstep * (i as f32 + 1.0);
+                                self.wet[c][i] += sv * zg * gw;
+                                e += sv * sv;
+                            }
+                            if c == 0 {
+                                zone_energy[z] += (e / part as f32).sqrt() * g1w;
+                            }
                         }
-                    } else {
-                        // No conv contribution left: flush the residual
-                        // OLA tail once (voice dies at frame end).
-                        let b = &mut self.branches[z];
-                        let v = if vi == 0 {
-                            b.live.as_mut().unwrap()
-                        } else {
-                            b.ringing[vi - 1].as_mut().unwrap()
-                        };
-                        let g0 = zg * v.gain;
-                        let g1 = if v.dying { g0 * 0.5 } else { g0 };
-                        let gstep = (g1 - g0) / part as f32;
-                        for i in 0..part {
-                            self.wet[c][i] += v.tail[c][i] * (g0 + gstep * (i as f32 + 1.0));
-                            v.tail[c][i] = 0.0;
+
+                        // Epoch voices: same shared ring, gated by age.
+                        for vi in 0..=RING_SLOTS {
+                            let range = {
+                                let b = &self.branches[bi];
+                                let v = if vi == 0 {
+                                    b.live.as_ref()
+                                } else {
+                                    b.ringing[vi - 1].as_ref()
+                                };
+                                v.map(|v| {
+                                    let k = v.set.k;
+                                    if vi == 0 {
+                                        (0usize, k.min(v.age + 1))
+                                    } else {
+                                        (v.age.min(k), k.min(v.age + v.epoch_len))
+                                    }
+                                })
+                            };
+                            let Some((lo, hi)) = range else { continue };
+                            if lo < hi {
+                                self.acc_buf.fill(Complex::new(0.0, 0.0));
+                                {
+                                    let b = &self.branches[bi];
+                                    let r = &self.rings[z];
+                                    let v = if vi == 0 {
+                                        b.live.as_ref().unwrap()
+                                    } else {
+                                        b.ringing[vi - 1].as_ref().unwrap()
+                                    };
+                                    let k = v.set.k;
+                                    let src_c = c.min(v.set.ch - 1);
+                                    for j in lo..hi {
+                                        let slot =
+                                            (head + self.max_parts - j) % self.max_parts;
+                                        let x = &r.x_ring[c]
+                                            [slot * self.bins..(slot + 1) * self.bins];
+                                        let h = &v.set.spectra[(src_c * k + j) * self.bins..]
+                                            [..self.bins];
+                                        for ((a, &xv), &hv) in
+                                            self.acc_buf.iter_mut().zip(x).zip(h)
+                                        {
+                                            *a += xv * hv;
+                                        }
+                                    }
+                                }
+                                self.acc_buf[0].im = 0.0;
+                                self.acc_buf[self.bins - 1].im = 0.0;
+                                self.ifft
+                                    .process_with_scratch(
+                                        &mut self.acc_buf,
+                                        &mut self.out_time,
+                                        &mut self.ifft_scratch,
+                                    )
+                                    .expect("ifft");
+                                let b = &mut self.branches[bi];
+                                let v = if vi == 0 {
+                                    b.live.as_mut().unwrap()
+                                } else {
+                                    b.ringing[vi - 1].as_mut().unwrap()
+                                };
+                                // Two in-frame ramps: dying gain × corner
+                                // weight (per-frame steps are staircases).
+                                let v0 = v.gain;
+                                let v1 = if v.dying { v0 * 0.5 } else { v0 };
+                                let vstep = (v1 - v0) / part as f32;
+                                for i in 0..part {
+                                    let sv = self.out_time[i] * scale + v.tail[c][i];
+                                    v.tail[c][i] = self.out_time[part + i] * scale;
+                                    let fi = i as f32 + 1.0;
+                                    let gw = g0w + wstep * fi;
+                                    let vg = v0 + vstep * fi;
+                                    self.wet[c][i] += sv * zg * gw * vg;
+                                }
+                            } else {
+                                let b = &mut self.branches[bi];
+                                let v = if vi == 0 {
+                                    b.live.as_mut().unwrap()
+                                } else {
+                                    b.ringing[vi - 1].as_mut().unwrap()
+                                };
+                                let v0 = v.gain;
+                                let v1 = if v.dying { v0 * 0.5 } else { v0 };
+                                let vstep = (v1 - v0) / part as f32;
+                                for i in 0..part {
+                                    let fi = i as f32 + 1.0;
+                                    let gw = g0w + wstep * fi;
+                                    let vg = v0 + vstep * fi;
+                                    self.wet[c][i] += v.tail[c][i] * zg * gw * vg;
+                                    v.tail[c][i] = 0.0;
+                                }
+                            }
                         }
                     }
                 }
-            }
 
-            // --- voice ages & deaths (once per frame, after all channels)
-            {
-                let ring_cap = (p.ring.round() as usize).clamp(1, RING_SLOTS);
-                let b = &mut self.branches[z];
-                if let Some(v) = &mut b.live {
-                    v.age += 1;
-                }
-                for i in 0..RING_SLOTS {
-                    let dead = matches!(
-                        &b.ringing[i],
-                        Some(v) if v.age >= v.set.k || v.gain < 1e-4
-                    );
-                    if dead {
-                        let v = b.ringing[i].take().unwrap();
-                        b.tail_pool.push(v.tail);
-                        b.retire_push(v.set);
-                    } else if let Some(v) = &mut b.ringing[i] {
+                // Voice ages & deaths (once per frame, per corner).
+                {
+                    let ring_cap = (p.ring.round() as usize).clamp(1, RING_SLOTS);
+                    let b = &mut self.branches[bi];
+                    if let Some(v) = &mut b.live {
                         v.age += 1;
-                        if i >= ring_cap {
-                            v.dying = true; // cap reduced mid-ring
-                        }
-                        if v.dying {
-                            v.gain *= 0.5; // −6 dB/frame ≈ 50 ms fade-out
+                    }
+                    for i in 0..RING_SLOTS {
+                        let dead = matches!(
+                            &b.ringing[i],
+                            Some(v) if v.age >= v.set.k || v.gain < 1e-4
+                        );
+                        if dead {
+                            let v = b.ringing[i].take().unwrap();
+                            b.tail_pool.push(v.tail);
+                            b.retire_push(v.set);
+                        } else if let Some(v) = &mut b.ringing[i] {
+                            v.age += 1;
+                            if i >= ring_cap {
+                                v.dying = true; // cap reduced mid-ring
+                            }
+                            if v.dying {
+                                v.gain *= 0.5; // −6 dB/frame ≈ 50 ms
+                            }
                         }
                     }
                 }
@@ -1383,13 +1624,13 @@ mod tests {
         let ir_b = rng_seq(9, 512);
         let mut e = Engine::new_sized(sr, 1, part, 0.1);
         let r = e.renderer();
-        let set_a = r.render(&[ir_a.clone()], sr, 1.0);
-        let set_b = r.render(&[ir_b.clone()], sr, 1.0);
+        let set_a = r.render(&[ir_a.clone()], sr, 1.0, 0.0);
+        let set_b = r.render(&[ir_b.clone()], sr, 1.0, 0.0);
         let p = EngineParams {
             tails: TailMode::Ungated,
             ..single_zone_params()
         };
-        e.queue_partition_set(0, set_a, &p).ok().unwrap();
+        e.queue_partition_set(0, 0, set_a, &p).ok().unwrap();
         let x = rng_seq(21, 2048);
         let n_t = 1024; // frame-aligned switch
         let mut input = x.clone();
@@ -1398,7 +1639,7 @@ mod tests {
         let mut set_b = Some(set_b);
         for (i, chunk) in input.chunks(part).enumerate() {
             if i * part == n_t {
-                e.queue_partition_set(0, set_b.take().unwrap(), &p)
+                e.queue_partition_set(0, 0, set_b.take().unwrap(), &p)
                     .ok()
                     .unwrap();
             }
@@ -1461,8 +1702,8 @@ mod tests {
                 // every 10 frames ≈ the plugin's 50 ms debounce floor —
                 // still far faster than these voices decay (τ≈2700 smp,
                 // ringing for 32-partition spans)
-                let set = r.render(&[mk_ir(freqs[(fi / 10) % 4])], sr, 1.0);
-                e.queue_partition_set(0, set, &p).ok().unwrap();
+                let set = r.render(&[mk_ir(freqs[(fi / 10) % 4])], sr, 1.0, 0.0);
+                e.queue_partition_set(0, 0, set, &p).ok().unwrap();
             }
             let mut buf = chunk.to_vec();
             let mut io = [buf.as_mut_slice()];
@@ -1479,6 +1720,108 @@ mod tests {
             max_d2 < 0.02,
             "eviction discontinuity: max |Δ²| = {max_d2} (hard cuts land ≈ 0.2+)"
         );
+    }
+
+    #[test]
+    fn blend_mixes_corners_exactly() {
+        // Corner blend is output-gain math: at (x=0.5, y=0) the output is
+        // exactly 0.5·conv(A) + 0.5·conv(B) (NW=A, NE=B).
+        let sr = 48000.0;
+        let ir_a = rng_seq(7, 512);
+        let ir_b = rng_seq(9, 512);
+        let mut e = Engine::new_sized(sr, 1, 64, 0.1);
+        e.set_source_ir_at(0, 0, vec![ir_a.clone()], sr, 1.0);
+        e.set_source_ir_at(0, 1, vec![ir_b.clone()], sr, 1.0);
+        let p = EngineParams {
+            blend_x: 0.5,
+            ..single_zone_params()
+        };
+        // settle prev_w ramp with a silent block first
+        let mut warm = vec![0.0f32; 256];
+        let mut io = [warm.as_mut_slice()];
+        e.process_block(&mut io, &p);
+        let x = rng_seq(42, 2000);
+        let y = run_engine(&mut e, &p, &x, 512);
+        let ya = naive_conv(&x, &ir_a);
+        let yb = naive_conv(&x, &ir_b);
+        let n = y.len().min(ya.len());
+        let mut err = 0.0f64;
+        let mut refe = 0.0f64;
+        for i in 0..n {
+            let r = 0.5 * ya[i] as f64 + 0.5 * yb[i] as f64;
+            err += (y[i] as f64 - r).powi(2);
+            refe += r.powi(2);
+        }
+        let snr = 10.0 * (refe / err.max(1e-30)).log10();
+        assert!(snr > 80.0, "blend SNR {snr} dB");
+    }
+
+    #[test]
+    fn damp_darkens_the_render() {
+        let sr = 48000.0;
+        let r = IrRenderer::new(sr, 64, 0.1);
+        let ir = rng_seq(5, 2048);
+        let bright = r.render(&[ir.clone()], sr, 1.0, 0.0);
+        let dark = r.render(&[ir.clone()], sr, 1.0, 1.0);
+        // compare HF energy of the last partitions' spectra
+        let hf = |set: &PartitionSet| -> f64 {
+            let bins = set.bins;
+            let k = set.k;
+            let mut e = 0.0f64;
+            for part in (k / 2)..k {
+                for b in (bins / 2)..bins {
+                    e += set.spectra[part * bins + b].norm() as f64;
+                }
+            }
+            e
+        };
+        let (eb, ed) = (hf(&bright), hf(&dark));
+        assert!(
+            ed < eb * 0.05,
+            "damp=1 tail HF should collapse: bright {eb}, dark {ed}"
+        );
+    }
+
+    #[test]
+    fn crystal_generates_clean_harmonics() {
+        // Crystal mode, identity IRs in all four order slots: a sine at f
+        // must yield energy at 2f/3f/4f (and DC blocked on even orders).
+        let sr = 48000.0;
+        let part = 64usize;
+        let mut e = Engine::new_sized(sr, 1, part, 0.05);
+        for z in 0..4 {
+            e.set_source_ir_at(z, 0, vec![vec![1.0]], sr, 1.0);
+        }
+        let p = EngineParams {
+            n_zones: 4,
+            wet: 1.0,
+            dry: 0.0,
+            shaper: ShaperMode::Crystal,
+            drive: 4.0,
+            ..EngineParams::default()
+        };
+        let f0 = 750.0f64; // divides sr for clean bins in the probe
+        let n = 8192;
+        let x: Vec<f32> = (0..n)
+            .map(|i| ((std::f64::consts::TAU * f0 * i as f64 / sr).sin() * 0.25) as f32)
+            .collect();
+        let y = run_engine(&mut e, &p, &x, 256);
+        // Goertzel-style probes over the steady middle
+        let seg = &y[2048..6144];
+        let probe = |f: f64| -> f64 {
+            let (mut re, mut im) = (0.0f64, 0.0f64);
+            for (i, &v) in seg.iter().enumerate() {
+                let ph = std::f64::consts::TAU * f * i as f64 / sr;
+                re += v as f64 * ph.cos();
+                im += v as f64 * ph.sin();
+            }
+            (re * re + im * im).sqrt() / seg.len() as f64
+        };
+        let (h1, h2, h3, h4) = (probe(f0), probe(2.0 * f0), probe(3.0 * f0), probe(4.0 * f0));
+        let dc = probe(0.0);
+        assert!(h2 > h1 * 0.01 && h3 > h1 * 0.001 && h4 > h1 * 0.0001,
+            "harmonics missing: h1={h1} h2={h2} h3={h3} h4={h4}");
+        assert!(dc < h2 * 0.05, "DC leak: dc={dc} vs h2={h2}");
     }
 
     #[test]

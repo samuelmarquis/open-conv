@@ -1050,23 +1050,26 @@ impl Engine {
                             let x = self.in_fifo[c][i];
                             lp1 += alpha * (x - lp1);
                             lp2 += alpha * (lp1 - lp2);
-                            // Bounded power shaper: below the knee
-                            // s ≈ g·lp, so order k ≈ g^(k−1)·lpᵏ (the
-                            // Crystal Gain law); at hot levels |s|→1 so
-                            // |order| ≤ |input| — the first version's
-                            // raw (g·x)ᵏ/g exploded past g·x = 1
-                            // ("annihilated my limiter").
+                            // Chebyshev harmonic generator on a bounded
+                            // signal (Novak's basis; research §5.2).
+                            // s = sigmoid(g·lp) ∈ (−1,1): never explodes
+                            // (v1 raw powers blew up past g·x=1), and
+                            // unlike powers-of-sigmoid (v2 — went dull:
+                            // s^k of a saturated s is ~constant), T_k
+                            // OSCILLATES at full swing — drive cranked ⇒
+                            // approaching the pure k-th harmonic. Rest
+                            // constants dropped so silence stays silence;
+                            // trims keep every order ≤ unity.
                             let mut v = if order == 1 {
                                 x
                             } else {
                                 let gs = g * lp2;
                                 let s = gs / (1.0 + gs * gs).sqrt();
-                                // ×0.5 per order step: order k ceilings
-                                // 6·(k−1) dB under the fundamental — a
-                                // natural harmonic rolloff ("really
-                                // fucking loud" verdict on the unity
-                                // ceiling). Zone Gains override per order.
-                                lp2 * (0.5 * s).powi(order - 1)
+                                match order {
+                                    2 => 0.5 * (2.0 * s * s), // T2+1
+                                    3 => (4.0 * s * s - 3.0) * s, // T3
+                                    _ => 0.5 * (8.0 * s * s - 8.0) * s * s, // T4+1
+                                }
                             };
                             if even {
                                 // DC-block: x^even of a sine carries DC

@@ -60,32 +60,28 @@ the tail). The IR's head stays bright — the sample's identity — while
 the wash darkens like walls soaking it up. Automating it re-renders in
 the background and streams in at Morph Speed, like Size.
 
-### 34 — Mode (ir) — Zones / Crystalize (Zones)
+### 34 — Mode (ir) — Zones / Quartz / Bismuth (Zones)
 
-What the four slots mean. **Zones**: the level ladder (everything above).
-**Crystalize**: slots become harmonic orders — slot 1 hears the clean
-signal, slot 2 its 2nd-harmonic content (x²), slot 3 the 3rd, slot 4 the
-4th — each convolved with its own room. Clean *arithmetic* harmonics:
-no clipping anywhere, inputs pre-lowpassed per order so nothing aliases,
-even orders DC-blocked. Distortion that spatializes instead of crunching.
-Zone Level/Selector/Attack/Release/Symmetry are inactive in Crystalize;
-Zone Gains become per-order room sends; the XY pad and Damp still apply.
+What the four slots mean. **Zones**: the level ladder (everything
+above). The other two are the crystal modes: slots become harmonic
+orders — slot 1 hears the clean signal, slot 2 its 2nd-harmonic
+content, slot 3 the 3rd, slot 4 the 4th — each convolved with its own
+room. Inputs are pre-lowpassed per order (nothing aliases) and even
+orders are DC-blocked; distortion that spatializes instead of crunching.
+**Quartz** (Chebyshev — the oscillator crystal): diffuse, bounded,
+approaching mathematically pure harmonics at full drive. **Bismuth**
+(raw powers — the rough hopper crystal): even orders rectify the
+envelope into a low-end *rumble* after impacts, tonal at low Size;
+exact original waveform with a tempered level law (v1-identical through
+2× gain, ⅓ dB-slope above). Zone Level/Selector/Attack/Release/Symmetry
+are inactive in crystal modes; Zone Gains become per-order room sends;
+the XY pad and Damp still apply.
 
 ### 35 — Crystal Gain (ir) — 1.00×–8.00× (2.00×)
 
 Harmonic weighting in Crystalize: order k is scaled by gainᵏ⁻¹, so the
 clean order is invariant and each higher order rises with the knob.
 Low = a whisper of octave-room; high = the harmonic rooms roar.
-
-### 36 — Crystal Shape (ir) — Cheby / Raw v1 (Cheby)
-
-Two distinct harmonic instruments (verdict: "TOTALLY DISTINCT", both
-keepers). **Cheby**: bounded Chebyshev generator — diffuse, harmonically
-pure at full drive, can never run away. **Raw v1**: the original power
-law — even orders rectify the envelope into a rough low-end *rumble*
-after impacts (goes tonal at low Size); the exact v1 waveform at every
-knob position, with the level law tempered above 2× gain (per-order
-boost climbs at ⅓ the dB slope past the beloved g ≤ 2 region).
 
 ## Practical notes
 

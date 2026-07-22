@@ -13,7 +13,7 @@ use open_conv_engine::{CrystalShape, EngineParams, LevelMode, MAX_ZONES, ShaperM
 
 use crate::plugin::{
     PARAM_ATTACK_ID, PARAM_BLEND_X_ID, PARAM_BLEND_Y_ID, PARAM_CORNER_IDS, PARAM_CRYSTAL_ID,
-    PARAM_CRYSTAL_SHAPE_ID, PARAM_DAMP_IDS, PARAM_BYPASS_ID, PARAM_DRY_ID, PARAM_FADE_ID, PARAM_MODE_ID, PARAM_SHAPER_ID,
+    PARAM_DAMP_IDS, PARAM_BYPASS_ID, PARAM_DRY_ID, PARAM_FADE_ID, PARAM_MODE_ID, PARAM_SHAPER_ID,
     PARAM_MORPH_ID, PARAM_RELEASE_ID, PARAM_RELOAD_ID, PARAM_SIZE_ID, PARAM_SYM_ID, PARAM_TAILS_ID,
     PARAM_WET_ID, PARAM_ZONES_ID, PARAM_ZONE_GAIN_IDS, PARAM_ZONE_LEVEL_IDS, param_clamp,
     param_default, param_exists,
@@ -106,13 +106,15 @@ impl SharedState {
             blend_x: self.v(PARAM_BLEND_X_ID) as f64,
             blend_y: self.v(PARAM_BLEND_Y_ID) as f64,
             damp: std::array::from_fn(|i| self.v(PARAM_DAMP_IDS[i]) as f64),
+            // Three-way Mode: 0 = Zones, 1 = Quartz (Chebyshev),
+            // 2 = Bismuth (raw powers).
             shaper: if self.v(PARAM_SHAPER_ID) >= 0.5 {
                 ShaperMode::Crystal
             } else {
                 ShaperMode::Zones
             },
             drive: self.v(PARAM_CRYSTAL_ID) as f64,
-            crystal_shape: if self.v(PARAM_CRYSTAL_SHAPE_ID) >= 0.5 {
+            crystal_shape: if self.v(PARAM_SHAPER_ID) >= 1.5 {
                 CrystalShape::RawV1
             } else {
                 CrystalShape::Cheby

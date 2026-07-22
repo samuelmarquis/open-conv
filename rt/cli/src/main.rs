@@ -34,7 +34,8 @@
 //!                          ("-" skips a corner; folder bank is plugin-only)
 //!   --blend-x F --blend-y F  XY pad position 0..1 [0,0 = NW]
 //!   --damp "a,b,c,d"       per-zone damping 0..1 [0]
-//!   --shaper zones|crystal slot semantics: level zones or harmonic orders
+//!   --shaper zones|quartz|bismuth  slot semantics: level zones, or
+//!                          harmonic orders (quartz=Chebyshev, bismuth=raw)
 //!   --crystal F            crystal harmonic gain 1..8 [2]
 //!   --size F               IR stretch ratio [1.0]
 //!   --size-sweep "a:b"     sweep size a→b across the input duration
@@ -43,7 +44,9 @@
 //!   --normalize            peak-normalize output to 0.97
 //!   --viz-dump FILE.jsonl  drain the viz ring to JSON lines
 
-use open_conv_engine::{CORNERS, Engine, EngineParams, LevelMode, MAX_ZONES, ShaperMode, TailMode};
+use open_conv_engine::{
+    CORNERS, CrystalShape, Engine, EngineParams, LevelMode, MAX_ZONES, ShaperMode, TailMode,
+};
 use std::fs::File;
 use std::io::{BufWriter, Write as _};
 
@@ -128,6 +131,7 @@ fn main() {
     let mut blend_y = 0.0;
     let mut damp_list: Option<Vec<f64>> = None;
     let mut shaper = ShaperMode::Zones;
+    let mut crystal_shape = CrystalShape::Cheby;
     let mut crystal = 2.0;
     let mut tails = TailMode::Gated;
     let mut sym_from_mode = false;
@@ -188,7 +192,11 @@ fn main() {
             "--shaper" => {
                 shaper = match val().as_str() {
                     "zones" => ShaperMode::Zones,
-                    "crystal" | "crystalize" => ShaperMode::Crystal,
+                    "quartz" | "crystal" | "crystalize" => ShaperMode::Crystal,
+                    "bismuth" | "raw" => {
+                        crystal_shape = CrystalShape::RawV1;
+                        ShaperMode::Crystal
+                    }
                     m => die(&format!("unknown shaper {m}")),
                 }
             }
@@ -296,6 +304,7 @@ fn main() {
         },
         shaper,
         drive: crystal,
+        crystal_shape,
         dry,
         size,
         ..Default::default()

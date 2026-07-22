@@ -33,7 +33,7 @@ pub(crate) const PARAM_BLEND_Y_ID: u32 = 29;
 pub(crate) const PARAM_DAMP_IDS: [u32; 4] = [30, 31, 32, 33];
 pub(crate) const PARAM_SHAPER_ID: u32 = 34;
 pub(crate) const PARAM_CRYSTAL_ID: u32 = 35;
-pub(crate) const PARAM_CRYSTAL_SHAPE_ID: u32 = 36;
+// id 36 retired (Crystal Shape — folded into the three-way Mode)
 pub(crate) const PARAM_FADE_ID: u32 = 21;
 pub(crate) const PARAM_TAILS_ID: u32 = 22;
 
@@ -190,20 +190,19 @@ const PARAM_SPECS: &[ParameterSpec] = &[
     continuous(PARAM_DAMP_IDS[1], "Zone 2 Damp", "zones", 0.0, 1.0, 0.0, Format::Percent),
     continuous(PARAM_DAMP_IDS[2], "Zone 3 Damp", "zones", 0.0, 1.0, 0.0, Format::Percent),
     continuous(PARAM_DAMP_IDS[3], "Zone 4 Damp", "zones", 0.0, 1.0, 0.0, Format::Percent),
-    // Crystalize: slots become harmonic orders 1..4, each with its own
-    // room — clean arithmetic harmonics, no clipping anywhere.
-    choice(PARAM_SHAPER_ID, "Mode", "ir", &["Zones", "Crystalize"], 0.0, false),
-    continuous(PARAM_CRYSTAL_ID, "Crystal Gain", "ir", 1.0, 8.0, 2.0, Format::Ratio),
-    // A/B surface: Cheby = bounded, harmonically pure at full drive.
-    // Raw v1 = the original unbounded power law — levels CAN run away.
+    // Crystal modes: slots become harmonic orders 1..4, each with its
+    // own room. Quartz = Chebyshev (diffuse, pure harmonics at full
+    // drive, bounded). Bismuth = raw powers (rectified low-end rumble,
+    // tonal at low Size; tempered level law).
     choice(
-        PARAM_CRYSTAL_SHAPE_ID,
-        "Crystal Shape",
+        PARAM_SHAPER_ID,
+        "Mode",
         "ir",
-        &["Cheby", "Raw v1"],
+        &["Zones", "Quartz", "Bismuth"],
         0.0,
         false,
     ),
+    continuous(PARAM_CRYSTAL_ID, "Crystal Gain", "ir", 1.0, 8.0, 2.0, Format::Ratio),
 ];
 
 const BANKS: &[&str] = &["Rooms", "Subdrop", "Resoroom", "Folder"];

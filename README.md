@@ -25,7 +25,7 @@ open_conv_plugin_wrac --release`.
 
 - `docs/research/` — numbered clean-room evidence corpus
   (`01-prior-art.md` is the literature survey this design stands on)
-- `docs/design/` — before-the-fact plans (`01-architecture.md`)
+- `docs/design/` — before-the-fact plans (`01-architecture.md`); `docs/DSP.md` — the as-shipped engine walkthrough
 - `rt/` — Rust workspace: `engine/` (the DSP, plain Rust, dep: realfft) +
   `cli/` (offline renderer for listening batches)
 - `lab/` — Python prototype lab (validates the two load-bearing claims:

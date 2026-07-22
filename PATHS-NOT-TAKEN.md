@@ -159,6 +159,19 @@ what hides there / re-entry notes**. Research references point into
   the same IR. (2026-07-22: user reviewed and deferred — "hit the other
   three first [XY blend, damp, drive], then we'll revisit." Wants to
   avoid algorithmic-reverb pitfalls; the lab A/B gate is the answer.)
+- **Phase-1 results (2026-07-22, batch 009, `lab/exp04_tail_fit.py`):**
+  STFT-noise tail fits were A/B'd on five IRs (noise-like, tonal boom,
+  three user samples). Verdict: audibly distinct — fit-floor leakage
+  reverberates content outside the true IR spectrum ("algorithmic-reverb
+  highend"; user *liked* it on boom+loop), random-phase resynthesis
+  blurs HF microstructure (press "lacks crisp high-end fidelity"),
+  sparse material exposes the naked tail (murky: orig on kicks, hybrid
+  on loop). Deferred again by user. **Re-entry shape:** likely a
+  *blend dial* (sample-true ↔ resynth tail; Freeze/instant-Decay unlock
+  at the parametric end) rather than a transparency claim — the user
+  preferred the error twice. Before engine work: fix fit-floor gating
+  (kills the leak) and HF handling; the boom case wants the modal route
+  if tonal tails ever need to pass.
 
 ## 11. Reusing LGPL reference code verbatim
 
